@@ -1,6 +1,7 @@
 import hashlib
 import hmac
 import base64
+import re
 
 from fastapi import APIRouter, Request, HTTPException, BackgroundTasks
 
@@ -14,12 +15,71 @@ from app.utils.logger import log_conversation, logger
 
 router = APIRouter()
 WARNING_TEXT = "คำเตือน: ควรให้ช่างยืนยันหน้างาน"
+CONVERSATION_OPENERS = {
+    "สวัสดี",
+    "สวัสดีครับ",
+    "สวัสดีค่ะ",
+    "สวัสดีคับ",
+    "หวัดดี",
+    "หวัดดีครับ",
+    "หวัดดีค่ะ",
+    "ดีครับ",
+    "ดีค่ะ",
+    "ทักทาย",
+    "อรุณสวัสดิ์",
+    "สวัสดีตอนเช้า",
+    "สวัสดีตอนบ่าย",
+    "สวัสดีตอนเย็น",
+    "hello",
+    "hellobot",
+    "hi",
+    "hibot",
+    "hey",
+    "heybot",
+    "goodmorning",
+    "goodafternoon",
+    "goodevening",
+    "มีใครอยู่ไหม",
+    "อยู่ไหม",
+    "เริ่มต้น",
+    "เริ่มใช้งาน",
+    "เริ่มสนทนา",
+    "สอบถาม",
+    "สอบถามหน่อย",
+    "ขอสอบถามหน่อย",
+    "ขอถามหน่อย",
+    "ช่วยอะไรได้บ้าง",
+    "ทำอะไรได้บ้าง",
+    "แนะนำหน่อย",
+}
+OPENING_RESPONSES = (
+    "สวัสดีครับ ต้องการสอบถามเรื่องใดครับ เช่น วิธีใช้งาน การบำรุงรักษา อาการเสีย หรือ Error Code?",
+    "ยินดีช่วยครับ เครื่องมีอาการอย่างไร หรือมี Error Code อะไรขึ้นครับ? กรุณาระบุรุ่นเครื่องด้วยครับ",
+    "ต้องการให้ช่วยตรวจสอบเรื่องใดครับ? บอกรุ่นเครื่อง อาการที่พบ หรือ Error Code ได้เลยครับ",
+    "สอบถามได้เลยครับ ต้องการข้อมูลด้านการใช้งาน การซ่อมบำรุง หรือการแก้ Error Code เรื่องใดครับ?",
+)
 
 
 def _verify_signature(body: bytes, signature: str) -> bool:
     hash_ = hmac.new(settings.line_channel_secret.encode(), body, hashlib.sha256).digest()
     expected = base64.b64encode(hash_).decode()
     return hmac.compare_digest(expected, signature)
+
+
+def _normalize_message(text: str) -> str:
+    return re.sub(r"[\W_]+", "", text.casefold(), flags=re.UNICODE)
+
+
+def _is_conversation_opener(text: str) -> bool:
+    return _normalize_message(text) in {
+        _normalize_message(opener) for opener in CONVERSATION_OPENERS
+    }
+
+
+def _opening_response(text: str) -> str:
+    normalized = _normalize_message(text)
+    index = sum(map(ord, normalized)) % len(OPENING_RESPONSES)
+    return OPENING_RESPONSES[index]
 
 
 def _prepare_reply(
@@ -47,6 +107,12 @@ def _prepare_reply(
 
 async def _handle_message(reply_token: str, user_id: str, question: str) -> None:
     try:
+        if _is_conversation_opener(question):
+            answer = _opening_response(question)
+            await reply_message(reply_token, answer)
+            log_conversation(user_id, question, answer)
+            return
+
         embedding = await get_embedding(question)
         chunks = await retrieve_chunks(embedding)
         answer = await ask_llm(question, chunks)
