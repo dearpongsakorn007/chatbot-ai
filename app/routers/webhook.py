@@ -26,7 +26,14 @@ async def _handle_message(reply_token: str, user_id: str, question: str) -> None
         embedding = await get_embedding(question)
         chunks = await retrieve_chunks(embedding)
         answer = await ask_llm(question, chunks)
-        await reply_message(reply_token, answer)
+        images = [
+            (chunk.image_url, chunk.preview_image_url or chunk.image_url)
+            for chunk in chunks
+            if chunk.image_url
+        ]
+        if images:
+            answer = f"{answer}\n\nรูปอ้างอิงจากคู่มืออยู่ด้านล่าง"
+        await reply_message(reply_token, answer, images)
         log_conversation(user_id, question, answer)
     except Exception as e:
         logger.error(f"handle_message failed: {e}")

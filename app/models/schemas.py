@@ -28,3 +28,5 @@ class RetrievedChunk(BaseModel):
     content: str
     source: Optional[str] = None
     score: Optional[float] = None
+    image_url: Optional[str] = None
+    preview_image_url: Optional[str] = None
