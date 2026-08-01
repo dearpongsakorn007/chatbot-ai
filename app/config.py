@@ -18,7 +18,7 @@ class Settings(BaseSettings):
 
     # Embeddings
     embedding_api_key: str = ""
-    embedding_model: str = "text-embedding-3-small"
+    embedding_model: str = "gemini-embedding-001"
 
     # Supabase
     supabase_url: str = ""
