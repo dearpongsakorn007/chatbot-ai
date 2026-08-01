@@ -45,12 +45,28 @@ async def ask_llm(question: str, chunks: list[RetrievedChunk]) -> str:
         return resp.content[0].text
 
     # default: groq
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": user_content},
+    ]
     resp = await _groq_client.chat.completions.create(
         model=settings.groq_model,
-        max_tokens=200,
-        messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": user_content},
-        ],
+        max_completion_tokens=500,
+        extra_body={"reasoning_effort": "low"},
+        messages=messages,
     )
-    return resp.choices[0].message.content
+    answer = resp.choices[0].message.content or ""
+    if answer.strip():
+        return answer.strip()
+
+    retry = await _groq_client.chat.completions.create(
+        model=settings.groq_model,
+        max_completion_tokens=800,
+        extra_body={"reasoning_effort": "low"},
+        messages=messages,
+    )
+    answer = retry.choices[0].message.content or ""
+    if answer.strip():
+        return answer.strip()
+
+    return "พบข้อมูลอ้างอิง แต่ไม่สามารถเรียบเรียงคำตอบได้ กรุณาลองระบุอาการหรือ Error Code เพิ่มเติม"

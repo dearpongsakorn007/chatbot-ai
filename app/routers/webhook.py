@@ -97,9 +97,8 @@ def _prepare_reply(
                 reference_chunk.preview_image_url or reference_chunk.image_url,
             )
         )
-        source_name = reference_chunk.source or "คู่มือ"
         reference = reference_chunk.reference or "ไม่ระบุหน้า"
-        parts.append(f"รูปอ้างอิง [1]: {source_name} หน้า {reference}")
+        parts.append(f"รูปอ้างอิง [1]: หน้า {reference}")
 
     parts.append(WARNING_TEXT)
     return "\n\n".join(parts), images
