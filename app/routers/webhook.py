@@ -5,7 +5,7 @@ import base64
 from fastapi import APIRouter, Request, HTTPException, BackgroundTasks
 
 from app.config import settings
-from app.models.schemas import LineWebhookPayload
+from app.models.schemas import LineWebhookPayload, RetrievedChunk
 from app.services.embedding_service import get_embedding
 from app.services.retrieval_service import retrieve_chunks
 from app.services.claude_service import ask_llm
@@ -13,6 +13,7 @@ from app.services.line_service import reply_message
 from app.utils.logger import log_conversation, logger
 
 router = APIRouter()
+WARNING_TEXT = "คำเตือน: ควรให้ช่างยืนยันหน้างาน"
 
 
 def _verify_signature(body: bytes, signature: str) -> bool:
@@ -21,18 +22,35 @@ def _verify_signature(body: bytes, signature: str) -> bool:
     return hmac.compare_digest(expected, signature)
 
 
+def _prepare_reply(
+    answer: str,
+    chunks: list[RetrievedChunk],
+) -> tuple[str, list[tuple[str, str]]]:
+    parts = [answer.strip()]
+    images: list[tuple[str, str]] = []
+    reference_chunk = next((chunk for chunk in chunks if chunk.image_url), None)
+
+    if reference_chunk and reference_chunk.image_url:
+        images.append(
+            (
+                reference_chunk.image_url,
+                reference_chunk.preview_image_url or reference_chunk.image_url,
+            )
+        )
+        source_name = reference_chunk.source or "คู่มือ"
+        reference = reference_chunk.reference or "ไม่ระบุหน้า"
+        parts.append(f"รูปอ้างอิง [1]: {source_name} หน้า {reference}")
+
+    parts.append(WARNING_TEXT)
+    return "\n\n".join(parts), images
+
+
 async def _handle_message(reply_token: str, user_id: str, question: str) -> None:
     try:
         embedding = await get_embedding(question)
         chunks = await retrieve_chunks(embedding)
         answer = await ask_llm(question, chunks)
-        images = [
-            (chunk.image_url, chunk.preview_image_url or chunk.image_url)
-            for chunk in chunks
-            if chunk.image_url
-        ]
-        if images:
-            answer = f"{answer}\n\nรูปอ้างอิงจากคู่มืออยู่ด้านล่าง"
+        answer, images = _prepare_reply(answer, chunks)
         await reply_message(reply_token, answer, images)
         log_conversation(user_id, question, answer)
     except Exception as e:

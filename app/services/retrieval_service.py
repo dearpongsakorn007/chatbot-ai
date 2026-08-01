@@ -70,14 +70,24 @@ async def retrieve_chunks(query_embedding: list[float]) -> list[RetrievedChunk]:
     chunks = []
     for row in rows:
         metadata = row.get("metadata") or {}
+        reference = (
+            metadata.get("page_reference")
+            or metadata.get("manual_page")
+            or metadata.get("pdf_page_start")
+        )
         image = reference_images.get(
             (str(metadata.get("source_file") or ""), str(metadata.get("pdf_page_start")))
         ) or {}
         chunks.append(
             RetrievedChunk(
                 content=row.get("content", ""),
-                source=row.get("source") or metadata.get("source"),
+                source=(
+                    row.get("source")
+                    or metadata.get("source_file")
+                    or metadata.get("source")
+                ),
                 score=row.get("similarity"),
+                reference=str(reference) if reference is not None else None,
                 image_url=metadata.get("image_url") or image.get("image_url"),
                 preview_image_url=(
                     metadata.get("preview_image_url")

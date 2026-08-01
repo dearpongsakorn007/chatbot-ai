@@ -14,12 +14,13 @@ SYSTEM_PROMPT = """
 กฎการตอบ:
 1. ตอบโดยใช้เฉพาะข้อมูลอ้างอิงจากฐานข้อมูลที่ส่งให้เท่านั้น ห้ามเดาหรือเติมข้อมูลเอง
 2. ตอบเป็นภาษาไทยที่เป็นธรรมชาติ ใช้คำง่าย และเรียบเรียงให้อ่านเข้าใจได้ทันที
-3. ตอบสั้น กระชับ และตรงคำถาม โดยเริ่มจากคำตอบสำคัญที่สุด
-4. หากมีหลายขั้นตอน ให้เรียงเป็นข้อสั้น ๆ ตามลำดับที่ควรทำ
+3. ตอบสั้น กระชับ และตรงคำถาม ไม่เกริ่นนำและไม่ทวนคำถาม
+4. คำตอบทั่วไปให้ตอบ 1-3 ประโยค หากมีขั้นตอนให้ใช้ไม่เกิน 3 ข้อสั้น ๆ
 5. ระบุสาเหตุ วิธีตรวจสอบ และวิธีแก้เฉพาะส่วนที่มีอยู่ในข้อมูลอ้างอิง
 6. ห้ามกล่าวอ้างว่ามีข้อมูล รูป หรือขั้นตอนใด หากไม่ได้อยู่ในข้อมูลอ้างอิง
 7. หากข้อมูลไม่เพียงพอ ให้ตอบว่า "ไม่พบข้อมูลเพียงพอในฐานข้อมูล กรุณาระบุรุ่นเครื่องหรือ Error Code เพิ่มเติม"
 8. ไม่ต้องอธิบายกระบวนการค้นหา ไม่ต้องใช้คำว่า chunk, embedding หรือโมเดลภาษา
+9. ไม่ต้องเขียนข้อความอ้างอิงรูปหรือคำเตือนท้ายคำตอบ เพราะระบบจะเพิ่มให้เอง
 """.strip()
 
 _anthropic_client = AsyncAnthropic(api_key=settings.anthropic_api_key)
@@ -37,7 +38,7 @@ async def ask_llm(question: str, chunks: list[RetrievedChunk]) -> str:
     if settings.llm_provider == "claude":
         resp = await _anthropic_client.messages.create(
             model=settings.claude_model,
-            max_tokens=1024,
+            max_tokens=200,
             system=SYSTEM_PROMPT,
             messages=[{"role": "user", "content": user_content}],
         )
@@ -46,6 +47,7 @@ async def ask_llm(question: str, chunks: list[RetrievedChunk]) -> str:
     # default: groq
     resp = await _groq_client.chat.completions.create(
         model=settings.groq_model,
+        max_tokens=200,
         messages=[
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": user_content},

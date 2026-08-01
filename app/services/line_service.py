@@ -3,7 +3,7 @@ from app.config import settings
 
 LINE_REPLY_URL = "https://api.line.me/v2/bot/message/reply"
 LINE_PUSH_URL = "https://api.line.me/v2/bot/message/push"
-MAX_REPLY_IMAGES = 4
+MAX_REPLY_IMAGES = 1
 
 
 def _build_messages(
