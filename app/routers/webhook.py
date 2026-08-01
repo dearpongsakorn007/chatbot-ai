@@ -113,7 +113,7 @@ async def _handle_message(reply_token: str, user_id: str, question: str) -> None
             return
 
         embedding = await get_embedding(question)
-        chunks = await retrieve_chunks(embedding)
+        chunks = await retrieve_chunks(embedding, question)
         answer = await ask_llm(question, chunks)
         answer, images = _prepare_reply(answer, chunks)
         await reply_message(reply_token, answer, images)

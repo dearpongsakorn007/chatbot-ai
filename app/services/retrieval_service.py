@@ -3,12 +3,47 @@
 ใช้ function/RPC ชื่อ match_documents ซึ่งรองรับ embeddings ชุดปัจจุบัน
 """
 import logging
+import re
 
 from app.db.supabase_client import get_supabase
 from app.config import settings
 from app.models.schemas import RetrievedChunk
 
 logger = logging.getLogger("repair-bot")
+
+SEARCH_TERM_MAPPINGS = (
+    ("อาร์มเข้า", "arm in"),
+    ("อาร์มออก", "arm out"),
+    ("อาร์ม", "arm"),
+    ("โหลด", "load"),
+    ("รับภาระ", "load"),
+    ("ช้า", "slow"),
+    ("ไม่มีแรง", "weak"),
+    ("แรงตก", "weak"),
+    ("บูม", "boom"),
+    ("บุ้งกี๋", "bucket"),
+    ("บัคเก็ต", "bucket"),
+    ("สวิง", "swing"),
+    ("ปั๊ม", "pump"),
+    ("วาล์ว", "valve"),
+)
+
+
+def _expand_search_query(question: str) -> str:
+    normalized = question.casefold()
+    terms: list[str] = []
+    matched_phrases: set[str] = set()
+
+    for thai_term, english_term in SEARCH_TERM_MAPPINGS:
+        if thai_term not in normalized:
+            continue
+        if any(thai_term in phrase for phrase in matched_phrases):
+            continue
+        terms.extend(english_term.split())
+        matched_phrases.add(thai_term)
+
+    terms.extend(re.findall(r"\b[a-z]+\d+[a-z0-9-]*\b", normalized))
+    return " ".join(dict.fromkeys(terms))
 
 
 def _find_reference_images(supabase, rows: list[dict]) -> dict[tuple[str, str], dict]:
@@ -54,9 +89,12 @@ def _find_reference_images(supabase, rows: list[dict]) -> dict[tuple[str, str], 
     return images_by_page
 
 
-async def retrieve_chunks(query_embedding: list[float]) -> list[RetrievedChunk]:
+async def retrieve_chunks(
+    query_embedding: list[float],
+    question: str = "",
+) -> list[RetrievedChunk]:
     supabase = get_supabase()
-    result = supabase.rpc(
+    vector_result = supabase.rpc(
         "match_documents",
         {
             "query_embedding": query_embedding,
@@ -65,7 +103,33 @@ async def retrieve_chunks(query_embedding: list[float]) -> list[RetrievedChunk]:
         },
     ).execute()
 
-    rows = result.data or []
+    rows = []
+    fulltext_query = _expand_search_query(question)
+    if fulltext_query:
+        try:
+            fulltext_result = supabase.rpc(
+                "search_sk2008_fulltext",
+                {
+                    "search_query": fulltext_query,
+                    "result_limit": settings.top_k,
+                },
+            ).execute()
+            rows.extend(fulltext_result.data or [])
+        except Exception as exc:
+            logger.warning("full-text search failed: %s", exc)
+
+    rows.extend(vector_result.data or [])
+    unique_rows = []
+    seen_ids = set()
+    for row in rows:
+        row_id = row.get("id")
+        if row_id in seen_ids:
+            continue
+        seen_ids.add(row_id)
+        unique_rows.append(row)
+        if len(unique_rows) >= settings.top_k:
+            break
+    rows = unique_rows
     reference_images = _find_reference_images(supabase, rows)
     chunks = []
     for row in rows:
@@ -86,7 +150,7 @@ async def retrieve_chunks(query_embedding: list[float]) -> list[RetrievedChunk]:
                     or metadata.get("source_file")
                     or metadata.get("source")
                 ),
-                score=row.get("similarity"),
+                score=row.get("similarity") or row.get("search_score"),
                 reference=str(reference) if reference is not None else None,
                 image_url=metadata.get("image_url") or image.get("image_url"),
                 preview_image_url=(

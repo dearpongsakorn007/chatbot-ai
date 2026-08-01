@@ -15,7 +15,7 @@ SYSTEM_PROMPT = """
 1. ตอบโดยใช้เฉพาะข้อมูลอ้างอิงจากฐานข้อมูลที่ส่งให้เท่านั้น ห้ามเดาหรือเติมข้อมูลเอง
 2. ตอบเป็นภาษาไทยที่เป็นธรรมชาติ ใช้คำง่าย และเรียบเรียงให้อ่านเข้าใจได้ทันที
 3. ตอบสั้น กระชับ และตรงคำถาม ไม่เกริ่นนำและไม่ทวนคำถาม
-4. คำตอบทั่วไปให้ตอบ 1-3 ประโยค หากมีขั้นตอนให้ใช้ไม่เกิน 3 ข้อสั้น ๆ
+4. คำตอบทั้งหมดต้องไม่เกิน 350 ตัวอักษร ใช้ไม่เกิน 3 ข้อ และแต่ละข้อมีเพียง 1 ประโยคสั้น ๆ
 5. ระบุสาเหตุ วิธีตรวจสอบ และวิธีแก้เฉพาะส่วนที่มีอยู่ในข้อมูลอ้างอิง
 6. ห้ามกล่าวอ้างว่ามีข้อมูล รูป หรือขั้นตอนใด หากไม่ได้อยู่ในข้อมูลอ้างอิง
 7. หากข้อมูลไม่เพียงพอ ให้ตอบว่า "ไม่พบข้อมูลเพียงพอในฐานข้อมูล กรุณาระบุรุ่นเครื่องหรือ Error Code เพิ่มเติม"
@@ -38,7 +38,7 @@ async def ask_llm(question: str, chunks: list[RetrievedChunk]) -> str:
     if settings.llm_provider == "claude":
         resp = await _anthropic_client.messages.create(
             model=settings.claude_model,
-            max_tokens=200,
+            max_tokens=settings.llm_max_tokens,
             system=SYSTEM_PROMPT,
             messages=[{"role": "user", "content": user_content}],
         )
@@ -51,7 +51,7 @@ async def ask_llm(question: str, chunks: list[RetrievedChunk]) -> str:
     ]
     resp = await _groq_client.chat.completions.create(
         model=settings.groq_model,
-        max_completion_tokens=500,
+        max_completion_tokens=settings.llm_max_tokens,
         extra_body={"reasoning_effort": "low"},
         messages=messages,
     )
@@ -61,7 +61,7 @@ async def ask_llm(question: str, chunks: list[RetrievedChunk]) -> str:
 
     retry = await _groq_client.chat.completions.create(
         model=settings.groq_model,
-        max_completion_tokens=800,
+        max_completion_tokens=settings.llm_max_tokens,
         extra_body={"reasoning_effort": "low"},
         messages=messages,
     )
