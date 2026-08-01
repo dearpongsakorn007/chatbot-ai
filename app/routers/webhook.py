@@ -9,7 +9,7 @@ from app.config import settings
 from app.models.schemas import LineWebhookPayload, RetrievedChunk
 from app.services.embedding_service import get_embedding
 from app.services.retrieval_service import retrieve_chunks
-from app.services.claude_service import ask_llm
+from app.services.claude_service import ask_llm, rewrite_search_queries
 from app.services.line_service import reply_message
 from app.utils.logger import log_conversation, logger
 
@@ -112,8 +112,12 @@ async def _handle_message(reply_token: str, user_id: str, question: str) -> None
             log_conversation(user_id, question, answer)
             return
 
-        embedding = await get_embedding(question)
-        chunks = await retrieve_chunks(embedding, question)
+        search_queries = await rewrite_search_queries(question)
+        embedding_text = question
+        if search_queries:
+            embedding_text += f"\nTechnical manual terms: {search_queries[0]}"
+        embedding = await get_embedding(embedding_text)
+        chunks = await retrieve_chunks(embedding, search_queries)
         answer = await ask_llm(question, chunks)
         answer, images = _prepare_reply(answer, chunks)
         await reply_message(reply_token, answer, images)
