@@ -3,6 +3,7 @@ import json
 from app.models.schemas import RetrievedChunk
 from app.services.claude_service import (
     _cache_search_queries,
+    _build_context,
     _clean_answer,
     get_ambiguity_clarification,
     infer_search_category_hint,
@@ -51,7 +52,13 @@ def test_explicit_physical_or_leak_wording_skips_clarification():
 
 def test_parse_rerank_result_requires_verbatim_high_confidence_evidence():
     chunks = [
-        RetrievedChunk(content="Broken pipe causes fuel leak at injector connection", reference="17-39")
+        RetrievedChunk(
+            content=(
+                "Broken pipe causes fuel leak at injector connection. "
+                "Check the pipe connection and then replace the pipe if damaged."
+            ),
+            reference="17-39",
+        )
     ]
     raw = json.dumps(
         {
@@ -69,7 +76,25 @@ def test_parse_rerank_result_requires_verbatim_high_confidence_evidence():
     result = _parse_rerank_result(raw, chunks)
     assert result.clarification is None
     assert [chunk.reference for chunk in result.chunks] == ["17-39"]
-    assert result.chunks[0].content == "Broken pipe causes fuel leak at injector connection"
+    assert "Check the pipe connection" in result.chunks[0].content
+    assert result.chunks[0].verified_evidence == (
+        "Broken pipe causes fuel leak at injector connection"
+    )
+
+
+def test_build_context_keeps_verified_quote_and_full_manual_passage():
+    chunk = RetrievedChunk(
+        content=(
+            "Pump pressure does not increase. Check the relief valve. "
+            "Check the hydraulic circuit for leaks. Check the pressure sensor."
+        ),
+        verified_evidence="Pump pressure does not increase",
+        reference="13-25",
+    )
+    context = _build_context([chunk])
+    assert "หลักฐานยืนยันความเกี่ยวข้อง: Pump pressure does not increase" in context
+    assert "Check the hydraulic circuit for leaks" in context
+    assert "Check the pressure sensor" in context
 
 
 def test_parse_rerank_result_rejects_low_confidence_or_invented_evidence():
@@ -114,7 +139,7 @@ def test_clean_answer_replaces_uncertain_cause_wording():
     assert _clean_answer(answer) == "สาเหตุ: แรงดันปั๊มต่ำ ซึ่งทำให้เครื่องช้า"
 
 
-def test_clean_answer_collapses_duplicate_causes_and_enforces_length():
+def test_clean_answer_keeps_ordered_diagnostic_checks_and_enforces_length():
     answer = (
         "สาเหตุ: แรงดันปั๊มต่ำ สาเหตุ: วาล์วผิดปกติ\n"
         "ตรวจสอบ: ตรวจแรงดันปั๊ม และตรวจฟิลเตอร์\n"
@@ -123,8 +148,8 @@ def test_clean_answer_collapses_duplicate_causes_and_enforces_length():
     cleaned = _clean_answer(answer)
     assert cleaned.count("สาเหตุ:") == 1
     assert len(cleaned) <= 350
-    assert "ตรวจฟิลเตอร์" not in cleaned
-    assert "เปลี่ยนวาล์ว" not in cleaned
+    assert "ตรวจฟิลเตอร์" in cleaned
+    assert "เปลี่ยนวาล์ว" in cleaned
     assert "…" not in cleaned
 
 

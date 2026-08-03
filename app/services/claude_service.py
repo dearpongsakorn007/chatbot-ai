@@ -56,6 +56,15 @@ Rules:
   an injector physically detached, came loose, or leaked. The evidence must state the
   same failure mode requested by the customer.
 - Prefer explicit diagnostic steps, standard values, causes, and corrective actions.
+- Judge the complete intent, not one matching keyword. For measurements, require the
+  same component/property and prefer candidates that state the test condition and unit.
+  For symptoms, prefer candidates that contain an ordered diagnostic path. For procedures,
+  parts, wiring, and error codes, require the same action, component/circuit, or identifier.
+- Prefer a candidate containing the answer-bearing table row or paragraph over a nearby
+  index, heading, generic maintenance page, or page that only names the component.
+- A corrective action is direct evidence only when the candidate explicitly associates
+  it with the matching confirmed condition. A list of checks is not proof that the first
+  listed part has failed.
 - Every selection must include one short, contiguous, verbatim quote copied from that
   candidate which directly proves its relevance. Never paraphrase the evidence.
 - Confidence must reflect direct support, not topical similarity.
@@ -76,15 +85,20 @@ SYSTEM_PROMPT = """
 3. ตอบสั้น กระชับ และตรงคำถาม ไม่เกริ่นนำและไม่ทวนคำถาม
 4. คำตอบทั้งหมดต้องไม่เกิน 350 ตัวอักษร เขียนแต่ละหัวข้อคนละบรรทัดและไม่ใช้หัวข้อย่อยซ้อนกัน แต่ละหัวข้อต้องไม่เกิน 1 ประโยคสั้น
 5. ใช้เฉพาะหัวข้อที่มีข้อมูลจริง ได้แก่ "สาเหตุ:", "ตรวจสอบ:", "ค่ามาตรฐาน:" และ "วิธีแก้:" หากไม่มีข้อมูลหัวข้อใดให้ตัดหัวข้อนั้นออก
-6. หากข้อมูลมีหลายสาเหตุหรือหลายขั้นตอน ให้เลือกเฉพาะรายการที่ตรงคำถามและควรทำก่อนที่สุด ห้ามรวบรวมทุกความเป็นไปได้
+6. เลือกข้อมูลตามเจตนาคำถาม: อาการเสียให้เรียงจุดตรวจตามคู่มือ, Error Code ให้บอกความหมาย/เงื่อนไข/จุดตรวจ, ค่ามาตรฐานให้ระบุชิ้นส่วน/เงื่อนไข/ค่าและหน่วย, วิธีซ่อมให้รักษาลำดับขั้นตอน, อะไหล่และวงจรไฟฟ้าให้ระบุชิ้นส่วนหรือขั้วที่ตรงคำถาม
 7. ห้ามกล่าวอ้างว่ามีข้อมูล รูป หรือขั้นตอนใด หากไม่ได้อยู่ในข้อมูลอ้างอิง
 8. หากข้อมูลไม่เพียงพอ ให้ตอบว่า "ไม่พบข้อมูลเพียงพอในฐานข้อมูล กรุณาระบุรุ่นเครื่องหรือ Error Code เพิ่มเติม"
 9. ไม่ต้องอธิบายกระบวนการค้นหา ไม่ต้องใช้คำว่า chunk, embedding หรือโมเดลภาษา
 10. ห้ามเขียนเลขหน้า แหล่งข้อมูล ข้อความในวงเล็บเหลี่ยม ข้อความอ้างอิงรูป หรือคำเตือนท้ายคำตอบ เพราะระบบจะเพิ่มให้เอง
 11. หากคำถามระบุชื่อชิ้นส่วนไม่ชัด แต่ข้อมูลอ้างอิงเป็นชิ้นส่วนชนิดเฉพาะ ให้ระบุชื่อชิ้นส่วนนั้นสั้น ๆ ก่อนบอกค่า ห้ามเหมารวมว่าเป็นค่าของทุกชิ้นส่วน
 12. ให้ยึดข้อมูลหลักอันดับ 1 เป็นคำตอบหลัก ใช้ข้อมูลอันดับอื่นเฉพาะเมื่อสนับสนุนเรื่องเดียวกัน ห้ามนำข้อมูลคนละระบบหรือคนละอาการมารวมกัน
-13. เมื่อกล่าวถึงสาเหตุ ให้ขึ้นต้นด้วย "สาเหตุ:" และบอกข้อมูลโดยตรง ห้ามใช้คำว่า "อาจ" หรือ "อาจจะ"
-14. ทุกบรรทัดของคำตอบต้องลงท้ายด้วยคำว่า "ครับ"
+13. ใช้หัวข้อ "สาเหตุ:" เฉพาะเมื่อข้อมูลอ้างอิงระบุความสัมพันธ์ว่าเป็นสาเหตุโดยตรง ห้ามเปลี่ยนรายการตรวจสอบให้กลายเป็นข้อสรุปว่าชิ้นส่วนเสีย
+14. หากคู่มือให้ตรวจหลายจุดก่อนวินิจฉัย ให้ใช้หัวข้อ "ตรวจสอบ:" และเรียงรายการสำคัญตามลำดับในคู่มือไม่เกิน 4 รายการ ห้ามสรุปให้เปลี่ยนอะไหล่ตัวแรกทันที
+15. ใช้หัวข้อ "วิธีแก้:" เฉพาะเมื่อข้อมูลอ้างอิงระบุการแก้ไขสำหรับเงื่อนไขที่ยืนยันแล้วโดยตรง หากยังเป็นเพียงขั้นตอนวินิจฉัยให้แสดงเฉพาะ "ตรวจสอบ:"
+16. ค่ามาตรฐานต้องคงตัวเลข หน่วย ชิ้นส่วน และเงื่อนไขการวัดจากคู่มือ ห้ามนำค่าจากคนละโหมดหรือคนละเงื่อนไขมาเปรียบเทียบกัน
+17. หลักฐานที่ยืนยันเป็นเพียงจุดบอกว่าหน้านี้ตรงคำถาม ให้ใช้เนื้อหาเต็มของข้อมูลหลักเพื่อรักษาบริบทและลำดับ แต่ห้ามนำหัวข้อข้างเคียงที่ไม่เกี่ยวข้องมาตอบ
+18. เมื่อกล่าวถึงสาเหตุ ให้ขึ้นต้นด้วย "สาเหตุ:" และบอกข้อมูลโดยตรง ห้ามใช้คำว่า "อาจ" หรือ "อาจจะ"
+19. ทุกบรรทัดของคำตอบต้องลงท้ายด้วยคำว่า "ครับ"
 """.strip()
 
 _anthropic_client = AsyncAnthropic(api_key=settings.anthropic_api_key)
@@ -273,7 +287,12 @@ def _parse_rerank_result(raw: str, chunks: list[RetrievedChunk]) -> RerankResult
             continue
 
         seen_indices.add(index)
-        selected.append(chunks[index].model_copy(update={"content": evidence}))
+        # Preserve the complete selected passage for answer generation. The short quote
+        # only proves relevance; replacing the passage with it loses conditions, values,
+        # and the ordered checks that surround the quote.
+        selected.append(
+            chunks[index].model_copy(update={"verified_evidence": evidence})
+        )
         if len(selected) == 2:
             break
     return RerankResult(chunks=selected)
@@ -381,7 +400,13 @@ def _build_context(chunks: list[RetrievedChunk]) -> str:
     sections = []
     for index, chunk in enumerate(chunks):
         priority = "ข้อมูลหลักอันดับ 1" if index == 0 else f"ข้อมูลสนับสนุนอันดับ {index + 1}"
-        sections.append(f"[{priority}]\n{chunk.content}")
+        evidence = chunk.verified_evidence or "ไม่ระบุ"
+        content = chunk.content.strip()[:6000]
+        sections.append(
+            f"[{priority}]\n"
+            f"หลักฐานยืนยันความเกี่ยวข้อง: {evidence}\n"
+            f"เนื้อหาคู่มือฉบับเต็มของรายการนี้:\n{content}"
+        )
     return "\n\n---\n\n".join(sections)
 
 
@@ -413,35 +438,29 @@ def _clean_answer(answer: str) -> str:
         if not line:
             continue
 
-        # Keep only the first actionable item when the model returns a list.
-        line = re.split(r"\s+2[.)]\s*", line, maxsplit=1)[0]
-        line = re.sub(r"(?<=:)\s*1[.)]\s*", " ", line)
-        if line.startswith(("ตรวจสอบ:", "วิธีแก้:")):
-            line = re.split(
-                r"\s+และ(?:ตรวจ|เช็ก|เช็ค|วัด|ปรับ|เปลี่ยน|ซ่อม)",
-                line,
-                maxsplit=1,
-            )[0]
-        if len(line) > 140:
+        # Keep a concise ordered diagnostic path instead of silently discarding every
+        # check after item 1. The prompt limits the list to four relevant items.
+        line = re.sub(r"(?<=:)\s*1[.)]\s*", " 1) ", line)
+        if len(line) > 220:
             cut_at = max(
-                line.rfind(".", 0, 141),
-                line.rfind(";", 0, 141),
-                line.rfind(",", 0, 141),
+                line.rfind(".", 0, 221),
+                line.rfind(";", 0, 221),
+                line.rfind(",", 0, 221),
             )
-            if cut_at >= 70:
+            if cut_at >= 120:
                 line = line[: cut_at + 1]
             else:
                 boundaries = [
-                    line.find(separator, 60, 141)
+                    line.find(separator, 120, 221)
                     for separator in (" และ", " หรือ", " ซึ่ง", " โดย", " ทำให้")
                 ]
-                boundaries = [position for position in boundaries if position >= 60]
+                boundaries = [position for position in boundaries if position >= 120]
                 if boundaries:
                     line = line[: min(boundaries)].rstrip(" ,;:-")
                 else:
-                    cut_at = line.rfind(" ", 0, 138)
-                    if cut_at < 70:
-                        cut_at = 137
+                    cut_at = line.rfind(" ", 0, 218)
+                    if cut_at < 120:
+                        cut_at = 217
                     line = line[:cut_at].rstrip(" ,;:-") + "."
         compact_lines.append(line)
         if len(compact_lines) == 4:

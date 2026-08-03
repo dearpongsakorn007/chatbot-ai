@@ -26,6 +26,7 @@ class LineWebhookPayload(BaseModel):
 
 class RetrievedChunk(BaseModel):
     content: str
+    verified_evidence: Optional[str] = None
     source: Optional[str] = None
     score: Optional[float] = None
     reference: Optional[str] = None
