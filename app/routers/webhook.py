@@ -9,7 +9,12 @@ from app.config import settings
 from app.models.schemas import LineWebhookPayload, RetrievedChunk
 from app.services.embedding_service import get_embedding
 from app.services.retrieval_service import retrieve_chunks
-from app.services.claude_service import ask_llm, rerank_chunks, rewrite_search_queries
+from app.services.claude_service import (
+    ask_llm,
+    get_ambiguity_clarification,
+    rerank_chunks,
+    rewrite_search_queries,
+)
 from app.services.line_service import reply_message
 from app.utils.logger import log_conversation, logger
 
@@ -114,17 +119,27 @@ async def _handle_message(reply_token: str, user_id: str, question: str) -> None
             log_conversation(user_id, question, answer)
             return
 
+        clarification = get_ambiguity_clarification(question)
+        if clarification:
+            answer, images = _prepare_reply(clarification, [])
+            await reply_message(reply_token, answer, images)
+            log_conversation(user_id, question, answer)
+            return
+
         search_queries = await rewrite_search_queries(question)
         embedding_text = question
         if search_queries:
             embedding_text += f"\nTechnical manual terms: {search_queries[0]}"
         embedding = await get_embedding(embedding_text)
         chunks = await retrieve_chunks(embedding, search_queries)
-        chunks = await rerank_chunks(question, chunks)
-        if chunks:
+        reranked = await rerank_chunks(question, chunks, search_queries)
+        chunks = reranked.chunks
+        if reranked.clarification:
+            answer = reranked.clarification
+        elif chunks:
             answer = await ask_llm(question, chunks)
         else:
-            answer = "ไม่พบข้อมูลที่ตรงกับคำถาม กรุณาระบุชิ้นส่วน อาการ หรือค่าที่วัดเพิ่มเติม"
+            answer = "ไม่พบหลักฐานที่ตรงกับอาการในฐานข้อมูล กรุณาระบุชิ้นส่วน ตำแหน่ง และลักษณะอาการเพิ่มเติม"
         answer, images = _prepare_reply(answer, chunks)
         await reply_message(reply_token, answer, images)
         log_conversation(user_id, question, answer)

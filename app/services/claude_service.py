@@ -3,8 +3,10 @@
 รองรับสลับ provider ระหว่าง Claude กับ Groq ผ่าน settings.llm_provider
 โดยไม่ต้องแก้โค้ดส่วนอื่น (webhook, retrieval เหมือนเดิมทุกอย่าง)
 """
+import json
 import re
 from collections import OrderedDict
+from dataclasses import dataclass
 
 from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI  # groq ใช้ openai-compatible client
@@ -24,6 +26,13 @@ Return exactly 3 alternative English search queries, one per line.
   that the user did not mention. Related synonyms are allowed only in lines 2 and 3.
 - If the user supplies an error code or part number, put that exact identifier first
   without guessing what it means.
+- Distinguish a component that physically detached or came loose from fluid leaking
+  around that component. For physical detachment, search installation, clamp, holder,
+  retaining bolt, tightening torque, loose, or mounting terms; do not translate it as
+  a leak. Use the broader alternatives to cover both the retaining hardware and its
+  tightening specification.
+- Infer the fluid type only from the explicitly named system. In an injector or engine
+  fuel-system question, Thai "น้ำมัน" means fuel/diesel, never hydraulic oil.
 - Each line must contain only 1-5 concise technical terms likely to appear verbatim in a manual.
 - Translate the user's meaning; do not answer the question.
 - Preserve model numbers, error codes, units, and part numbers when they help identify the topic.
@@ -31,19 +40,31 @@ Return exactly 3 alternative English search queries, one per line.
 """.strip()
 
 RERANK_PROMPT = """
-You are a strict evidence reranker for a heavy-equipment service manual.
-Select at most 2 candidates that directly answer the customer's exact component,
-symptom, measurement, model, or error code.
+You are a strict evidence gate for a heavy-equipment service manual.
+Decide whether the candidates directly support the customer's exact physical symptom,
+component, measurement, model, or error code.
 
 Rules:
-- Candidate 1 must contain the strongest direct evidence needed to answer.
-- Select candidate 2 only when it supports the same component and problem.
+- If the wording can describe different failures that require different manual sections,
+  return status "clarify" and ask one short Thai clarification question.
+  Example ambiguity: a component physically came loose versus fluid leaked around it.
+- For status "answer", select at most 2 candidates. Candidate 1 must contain the
+  strongest direct evidence, and candidate 2 must support the same failure only.
 - Reject generic pages, nearby topics, and pages about a different system or component.
-- Matching only the machine model or a broad word such as pump is not enough.
+- Matching only a machine model, component name, or broad symptom is not enough.
+- A generic statement such as faulty injector or replace injector does not prove that
+  an injector physically detached, came loose, or leaked. The evidence must state the
+  same failure mode requested by the customer.
 - Prefer explicit diagnostic steps, standard values, causes, and corrective actions.
-- If no candidate directly supports the question, return NONE.
-- Otherwise return only candidate numbers separated by commas, such as: 2 or 2,5
-- Do not explain your choice.
+- Every selection must include one short, contiguous, verbatim quote copied from that
+  candidate which directly proves its relevance. Never paraphrase the evidence.
+- Confidence must reflect direct support, not topical similarity.
+- If no candidate directly supports the question, return status "none".
+
+Return JSON only in exactly one of these shapes:
+{"status":"clarify","clarification":"คำถามภาษาไทยสั้น ๆ","selections":[]}
+{"status":"none","clarification":"","selections":[]}
+{"status":"answer","clarification":"","selections":[{"index":2,"confidence":0.92,"evidence":"verbatim quote"}]}
 """.strip()
 
 SYSTEM_PROMPT = """
@@ -68,11 +89,54 @@ SYSTEM_PROMPT = """
 _anthropic_client = AsyncAnthropic(api_key=settings.anthropic_api_key)
 _groq_client = AsyncOpenAI(api_key=settings.groq_api_key, base_url="https://api.groq.com/openai/v1")
 _SEARCH_QUERY_CACHE_MAX = 512
+_MIN_EVIDENCE_CONFIDENCE = 0.8
 _search_query_cache: OrderedDict[str, tuple[str, ...]] = OrderedDict()
+
+
+@dataclass
+class RerankResult:
+    chunks: list[RetrievedChunk]
+    clarification: str | None = None
 
 
 def _question_cache_key(question: str) -> str:
     return " ".join(question.casefold().split())
+
+
+def get_ambiguity_clarification(question: str) -> str | None:
+    """Ask before retrieval when wording mixes fluid and physical detachment."""
+    normalized = question.casefold()
+    fluid_terms = ("น้ำมัน", "เชื้อเพลิง", "ดีเซล", "fuel", "diesel", " oil ")
+    separation_terms = (
+        "หลุด",
+        "เด้ง",
+        "ดันออก",
+        "โผล่ออก",
+        "loose",
+        "detached",
+        "popped out",
+        "came out",
+    )
+    explicit_leak_terms = ("รั่ว", "ซึม", "ไหลออก", "leak", "seep")
+    explicit_physical_terms = (
+        "จากฝาสูบ",
+        "ออกจากฝาสูบ",
+        "แคลมป์",
+        "ขายึด",
+        "น็อตยึด",
+        "clamp",
+        "holder",
+        "mounting bolt",
+    )
+    is_ambiguous = any(term in normalized for term in fluid_terms) and any(
+        term in normalized for term in separation_terms
+    )
+    is_explicit = any(term in normalized for term in explicit_leak_terms) or any(
+        term in normalized for term in explicit_physical_terms
+    )
+    if is_ambiguous and not is_explicit:
+        return "หมายถึงตัวหัวฉีดหลุดออกจากฝาสูบ หรือน้ำมันรั่วออกบริเวณหัวฉีดหรือท่อครับ?"
+    return None
 
 
 def _cache_search_queries(key: str, queries: list[str]) -> None:
@@ -100,22 +164,62 @@ def _parse_search_queries(raw: str) -> list[str]:
     return queries
 
 
-def _parse_rerank_indices(raw: str, candidate_count: int) -> list[int]:
-    if "NONE" in raw.upper():
-        return []
-    indices: list[int] = []
-    for value in re.findall(r"\d+", raw):
-        index = int(value) - 1
-        if 0 <= index < candidate_count and index not in indices:
-            indices.append(index)
-        if len(indices) == 2:
+def _normalize_evidence(text: str) -> str:
+    return " ".join(text.casefold().split())
+
+
+def _parse_rerank_result(raw: str, chunks: list[RetrievedChunk]) -> RerankResult:
+    try:
+        start = raw.index("{")
+        end = raw.rindex("}") + 1
+        payload = json.loads(raw[start:end])
+    except (ValueError, TypeError, json.JSONDecodeError):
+        return RerankResult(chunks=[])
+    if not isinstance(payload, dict):
+        return RerankResult(chunks=[])
+
+    status = str(payload.get("status") or "").casefold()
+    if status == "clarify":
+        clarification = " ".join(str(payload.get("clarification") or "").split())
+        if 10 <= len(clarification) <= 220:
+            return RerankResult(chunks=[], clarification=clarification)
+        return RerankResult(chunks=[])
+    if status != "answer":
+        return RerankResult(chunks=[])
+
+    selected: list[RetrievedChunk] = []
+    seen_indices: set[int] = set()
+    for selection in payload.get("selections") or []:
+        try:
+            index = int(selection.get("index")) - 1
+            confidence = float(selection.get("confidence"))
+        except (AttributeError, TypeError, ValueError):
+            continue
+        evidence = " ".join(str(selection.get("evidence") or "").split())
+        if (
+            not 0 <= index < len(chunks)
+            or index in seen_indices
+            or confidence < _MIN_EVIDENCE_CONFIDENCE
+            or len(evidence) < 20
+        ):
+            continue
+
+        normalized_content = _normalize_evidence(chunks[index].content)
+        normalized_evidence = _normalize_evidence(evidence)
+        if normalized_evidence not in normalized_content:
+            continue
+
+        seen_indices.add(index)
+        selected.append(chunks[index].model_copy(update={"content": evidence}))
+        if len(selected) == 2:
             break
-    return indices
+    return RerankResult(chunks=selected)
 
 
 def _build_rerank_content(
     question: str,
     chunks: list[RetrievedChunk],
+    search_queries: list[str] | None = None,
 ) -> str:
     candidates = []
     for index, chunk in enumerate(chunks, start=1):
@@ -125,7 +229,12 @@ def _build_rerank_content(
             f"Page: {chunk.reference or 'unknown'}\n"
             f"Content: {content}"
         )
-    return f"Customer question: {question}\n\n" + "\n\n---\n\n".join(candidates)
+    search_intent = " | ".join(search_queries or [])
+    return (
+        f"Customer question: {question}\n"
+        f"Technical search intent: {search_intent}\n\n"
+        + "\n\n---\n\n".join(candidates)
+    )
 
 
 async def rewrite_search_queries(question: str) -> list[str]:
@@ -170,12 +279,13 @@ async def rewrite_search_queries(question: str) -> list[str]:
 async def rerank_chunks(
     question: str,
     chunks: list[RetrievedChunk],
-) -> list[RetrievedChunk]:
+    search_queries: list[str] | None = None,
+) -> RerankResult:
     """Use the LLM only as a strict relevance judge before answer generation."""
-    if len(chunks) <= 1:
-        return chunks
+    if not chunks:
+        return RerankResult(chunks=[])
 
-    user_content = _build_rerank_content(question, chunks)
+    user_content = _build_rerank_content(question, chunks, search_queries)
     try:
         if settings.llm_provider == "claude":
             resp = await _anthropic_client.messages.create(
@@ -198,11 +308,10 @@ async def rerank_chunks(
                 ],
             )
             raw = resp.choices[0].message.content or ""
-        indices = _parse_rerank_indices(raw, len(chunks))
-        return [chunks[index] for index in indices]
+        return _parse_rerank_result(raw, chunks)
     except Exception:
-        # Keep the deterministic retrieval order if the reranker is unavailable.
-        return chunks[:2]
+        # Fail closed: do not answer or send an image without verified evidence.
+        return RerankResult(chunks=[])
 
 
 def _build_context(chunks: list[RetrievedChunk]) -> str:

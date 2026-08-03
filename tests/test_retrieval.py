@@ -1,9 +1,13 @@
+import json
+
+from app.models.schemas import RetrievedChunk
 from app.services.claude_service import (
     _cache_search_queries,
     _clean_answer,
+    get_ambiguity_clarification,
     _question_cache_key,
     _search_query_cache,
-    _parse_rerank_indices,
+    _parse_rerank_result,
     _parse_search_queries,
 )
 from app.services.retrieval_service import _rank_results
@@ -31,12 +35,69 @@ def test_parse_search_queries_rejects_empty_and_long_lines():
     assert _parse_search_queries("\n" + ("x" * 121)) == []
 
 
-def test_parse_rerank_indices_limits_and_deduplicates_results():
-    assert _parse_rerank_indices("2, 2, 5, 1", 5) == [1, 4]
+def test_ambiguous_injector_wording_requests_clarification():
+    question = "SK200-8 หัวฉีดน้ำมันดันออกหลุดออกมาเกิดจากอะไร"
+    clarification = get_ambiguity_clarification(question)
+    assert clarification is not None
+    assert "หลุดออกจากฝาสูบ" in clarification
+    assert "น้ำมันรั่ว" in clarification
 
 
-def test_parse_rerank_indices_accepts_no_direct_evidence():
-    assert _parse_rerank_indices("NONE", 5) == []
+def test_explicit_physical_or_leak_wording_skips_clarification():
+    assert get_ambiguity_clarification("หัวฉีดน้ำมันหลุดออกจากฝาสูบ") is None
+    assert get_ambiguity_clarification("น้ำมันรั่วบริเวณหัวฉีด") is None
+
+
+def test_parse_rerank_result_requires_verbatim_high_confidence_evidence():
+    chunks = [
+        RetrievedChunk(content="Broken pipe causes fuel leak at injector connection", reference="17-39")
+    ]
+    raw = json.dumps(
+        {
+            "status": "answer",
+            "clarification": "",
+            "selections": [
+                {
+                    "index": 1,
+                    "confidence": 0.91,
+                    "evidence": "Broken pipe causes fuel leak at injector connection",
+                }
+            ],
+        }
+    )
+    result = _parse_rerank_result(raw, chunks)
+    assert result.clarification is None
+    assert [chunk.reference for chunk in result.chunks] == ["17-39"]
+    assert result.chunks[0].content == "Broken pipe causes fuel leak at injector connection"
+
+
+def test_parse_rerank_result_rejects_low_confidence_or_invented_evidence():
+    chunks = [RetrievedChunk(content="Replace injector", reference="16-3")]
+    low_confidence = (
+        '{"status":"answer","selections":'
+        '[{"index":1,"confidence":0.4,"evidence":"Replace injector due to physical detachment"}]}'
+    )
+    invented = (
+        '{"status":"answer","selections":'
+        '[{"index":1,"confidence":0.95,"evidence":"Injector clamp became loose and detached"}]}'
+    )
+    assert _parse_rerank_result(low_confidence, chunks).chunks == []
+    assert _parse_rerank_result(invented, chunks).chunks == []
+
+
+def test_parse_rerank_result_returns_clarification_without_evidence():
+    chunks = [RetrievedChunk(content="Replace injector", reference="16-3")]
+    raw = json.dumps(
+        {
+            "status": "clarify",
+            "clarification": "หมายถึงตัวหัวฉีดหลุดจากฝาสูบ หรือน้ำมันรั่วบริเวณหัวฉีดครับ?",
+            "selections": [],
+        },
+        ensure_ascii=False,
+    )
+    result = _parse_rerank_result(raw, chunks)
+    assert result.chunks == []
+    assert "หัวฉีดหลุด" in result.clarification
 
 
 def test_clean_answer_removes_model_generated_source_labels():
