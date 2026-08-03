@@ -4,6 +4,7 @@
 โดยไม่ต้องแก้โค้ดส่วนอื่น (webhook, retrieval เหมือนเดิมทุกอย่าง)
 """
 import json
+import logging
 import re
 from collections import OrderedDict
 from dataclasses import dataclass
@@ -12,6 +13,8 @@ from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI  # groq ใช้ openai-compatible client
 from app.config import settings
 from app.models.schemas import RetrievedChunk
+
+logger = logging.getLogger("repair-bot")
 
 SEARCH_QUERY_PROMPT = """
 You convert customer questions into search queries for heavy-equipment service manuals.
@@ -128,7 +131,8 @@ SYSTEM_PROMPT = """
 _anthropic_client = AsyncAnthropic(api_key=settings.anthropic_api_key)
 _groq_client = AsyncOpenAI(api_key=settings.groq_api_key, base_url="https://api.groq.com/openai/v1")
 _SEARCH_QUERY_CACHE_MAX = 512
-_MIN_EVIDENCE_CONFIDENCE = 0.8
+_MIN_EVIDENCE_CONFIDENCE = 0.65
+_SAFE_FALLBACK_MIN_SUPPORT = 2
 _search_query_cache: OrderedDict[str, tuple[str, ...]] = OrderedDict()
 _FUNCTION_SCOPE_TERMS = {
     "boom": ("boom", "บูม"),
@@ -143,6 +147,7 @@ _FUNCTION_SCOPE_TERMS = {
 class RerankResult:
     chunks: list[RetrievedChunk]
     clarification: str | None = None
+    reason: str = "unknown"
 
 
 def _question_cache_key(question: str) -> str:
@@ -323,6 +328,65 @@ def _normalize_evidence(text: str) -> str:
     return " ".join(text.casefold().split())
 
 
+def _search_terms(search_queries: list[str] | None) -> set[str]:
+    terms: set[str] = set()
+    for query in search_queries or []:
+        normalized = re.sub(
+            r"\b(?:kobelco\s*)?sk\s*[- ]?\d{2,4}(?:-\d+)?\b",
+            " ",
+            query.casefold(),
+        )
+        for token in re.findall(r"[a-z0-9][a-z0-9_-]*", normalized):
+            token = token.strip("_-")
+            if (
+                not token
+                or token.isdigit()
+                or token in _GENERIC_SEARCH_TERMS
+                or (len(token) < 3 and token not in {"p1", "p2"})
+            ):
+                continue
+            terms.add(token)
+    return terms
+
+
+def _candidate_support_score(
+    chunk: RetrievedChunk,
+    search_queries: list[str] | None,
+) -> int:
+    """Deterministic lexical support used when the LLM quote is malformed."""
+    terms = _search_terms(search_queries)
+    if not terms:
+        return 0
+    content = chunk.content.casefold()
+    matched = {term for term in terms if term in content}
+    score = len(matched)
+    if any(
+        any(char.isalpha() for char in term)
+        and any(char.isdigit() for char in term)
+        and len(term) >= 4
+        and term in matched
+        for term in terms
+    ):
+        score += 2
+    return score
+
+
+def _select_safe_fallback(
+    chunks: list[RetrievedChunk],
+    search_queries: list[str] | None,
+) -> RetrievedChunk | None:
+    scored = [
+        (_candidate_support_score(chunk, search_queries), index, chunk)
+        for index, chunk in enumerate(chunks)
+    ]
+    if not scored:
+        return None
+    support, _, chunk = max(scored, key=lambda item: (item[0], -item[1]))
+    if support < _SAFE_FALLBACK_MIN_SUPPORT:
+        return None
+    return chunk.model_copy(update={"verified_evidence": None})
+
+
 def _evidence_is_supported(content: str, evidence: str) -> bool:
     """Verify either one prose quote or ordered verbatim cells from an OCR table."""
     normalized_content = _normalize_evidence(content)
@@ -355,55 +419,79 @@ def _evidence_is_supported(content: str, evidence: str) -> bool:
     return all(segment in normalized_content for segment in segments)
 
 
-def _parse_rerank_result(raw: str, chunks: list[RetrievedChunk]) -> RerankResult:
+def _parse_rerank_result(
+    raw: str,
+    chunks: list[RetrievedChunk],
+    search_queries: list[str] | None = None,
+) -> RerankResult:
     try:
         start = raw.index("{")
         end = raw.rindex("}") + 1
         payload = json.loads(raw[start:end])
     except (ValueError, TypeError, json.JSONDecodeError):
-        return RerankResult(chunks=[])
+        return RerankResult(chunks=[], reason="invalid_json")
     if not isinstance(payload, dict):
-        return RerankResult(chunks=[])
+        return RerankResult(chunks=[], reason="invalid_payload")
 
     status = str(payload.get("status") or "").casefold()
     if status == "clarify":
         clarification = " ".join(str(payload.get("clarification") or "").split())
         if 10 <= len(clarification) <= 220:
-            return RerankResult(chunks=[], clarification=clarification)
-        return RerankResult(chunks=[])
+            return RerankResult(
+                chunks=[], clarification=clarification, reason="clarification"
+            )
+        return RerankResult(chunks=[], reason="invalid_clarification")
     if status != "answer":
-        return RerankResult(chunks=[])
+        return RerankResult(chunks=[], reason=f"status_{status or 'missing'}")
 
     selected: list[RetrievedChunk] = []
     seen_indices: set[int] = set()
+    accepted_by_semantic_support = False
+    rejection_reasons: set[str] = set()
     for selection in payload.get("selections") or []:
         try:
             index = int(selection.get("index")) - 1
             confidence = float(selection.get("confidence"))
         except (AttributeError, TypeError, ValueError):
+            rejection_reasons.add("invalid_selection")
             continue
         evidence = " ".join(str(selection.get("evidence") or "").split())
-        if (
-            not 0 <= index < len(chunks)
-            or index in seen_indices
-            or confidence < _MIN_EVIDENCE_CONFIDENCE
-            or len(evidence) < 20
-        ):
+        if not 0 <= index < len(chunks) or index in seen_indices:
+            rejection_reasons.add("invalid_index")
+            continue
+        if confidence < _MIN_EVIDENCE_CONFIDENCE:
+            rejection_reasons.add("low_confidence")
             continue
 
-        if not _evidence_is_supported(chunks[index].content, evidence):
+        evidence_supported = len(evidence) >= 20 and _evidence_is_supported(
+            chunks[index].content, evidence
+        )
+        semantic_support = _candidate_support_score(chunks[index], search_queries)
+        if not evidence_supported and semantic_support < _SAFE_FALLBACK_MIN_SUPPORT:
+            rejection_reasons.add("quote_mismatch")
             continue
+        accepted_by_semantic_support = accepted_by_semantic_support or not evidence_supported
 
         seen_indices.add(index)
         # Preserve the complete selected passage for answer generation. The short quote
         # only proves relevance; replacing the passage with it loses conditions, values,
         # and the ordered checks that surround the quote.
         selected.append(
-            chunks[index].model_copy(update={"verified_evidence": evidence})
+            chunks[index].model_copy(
+                update={"verified_evidence": evidence if evidence_supported else None}
+            )
         )
         if len(selected) == 2:
             break
-    return RerankResult(chunks=selected)
+    if selected:
+        reason = (
+            "selected_semantic_support"
+            if accepted_by_semantic_support
+            else "selected_verified_quote"
+        )
+        return RerankResult(chunks=selected, reason=reason)
+    reason = "+".join(sorted(rejection_reasons)) or "no_selections"
+    return RerankResult(chunks=[], reason=reason)
 
 
 def _build_rerank_content(
@@ -503,9 +591,14 @@ async def rerank_chunks(
     search_queries: list[str] | None = None,
 ) -> RerankResult:
     """Use the LLM only as a strict relevance judge before answer generation."""
+    input_count = len(chunks)
     chunks = _filter_scope_mismatches(question, chunks)
     if not chunks:
-        return RerankResult(chunks=[])
+        logger.info(
+            "rerank completed input=%d scoped=0 selected=0 reason=scope_mismatch fallback=false",
+            input_count,
+        )
+        return RerankResult(chunks=[], reason="scope_mismatch")
 
     user_content = _build_rerank_content(question, chunks, search_queries)
     try:
@@ -530,17 +623,43 @@ async def rerank_chunks(
                 ],
             )
             raw = resp.choices[0].message.content or ""
-        return _parse_rerank_result(raw, chunks)
-    except Exception:
-        # Fail closed: do not answer or send an image without verified evidence.
-        return RerankResult(chunks=[])
+        result = _parse_rerank_result(raw, chunks, search_queries)
+        used_fallback = False
+        if not result.chunks and not result.clarification:
+            fallback = _select_safe_fallback(chunks, search_queries)
+            if fallback:
+                result = RerankResult(
+                    chunks=[fallback], reason=f"fallback_after_{result.reason}"
+                )
+                used_fallback = True
+        logger.info(
+            "rerank completed input=%d scoped=%d selected=%d reason=%s fallback=%s",
+            input_count,
+            len(chunks),
+            len(result.chunks),
+            result.reason,
+            str(used_fallback).lower(),
+        )
+        return result
+    except Exception as exc:
+        fallback = _select_safe_fallback(chunks, search_queries)
+        logger.warning(
+            "rerank failed error_type=%s input=%d scoped=%d fallback=%s",
+            type(exc).__name__,
+            input_count,
+            len(chunks),
+            str(bool(fallback)).lower(),
+        )
+        if fallback:
+            return RerankResult(chunks=[fallback], reason="fallback_after_error")
+        return RerankResult(chunks=[], reason="rerank_error")
 
 
 def _build_context(chunks: list[RetrievedChunk]) -> str:
     sections = []
     for index, chunk in enumerate(chunks):
         priority = "ข้อมูลหลักอันดับ 1" if index == 0 else f"ข้อมูลสนับสนุนอันดับ {index + 1}"
-        evidence = chunk.verified_evidence or "ไม่ระบุ"
+        evidence = chunk.verified_evidence or "ผ่านการตรวจคำศัพท์และขอบเขตหน้า"
         content = chunk.content.strip()[:6000]
         sections.append(
             f"[{priority}]\n"

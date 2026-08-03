@@ -3,6 +3,10 @@ import logging
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("repair-bot")
+# httpx logs the complete request URL at INFO level. Embedding providers may put
+# credentials in that URL, so keep transport logs above INFO in every environment.
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 
 def log_conversation(user_id: str, question: str, answer: str) -> None:

@@ -5,7 +5,9 @@ from app.services.claude_service import (
     _cache_search_queries,
     _build_context,
     _clean_answer,
+    _candidate_support_score,
     _filter_scope_mismatches,
+    _select_safe_fallback,
     get_ambiguity_clarification,
     infer_search_category_hint,
     _question_cache_key,
@@ -193,6 +195,58 @@ def test_parse_rerank_result_rejects_invented_table_cell():
         }
     )
     assert _parse_rerank_result(raw, chunks).chunks == []
+
+
+def test_parse_rerank_result_accepts_high_confidence_page_with_semantic_support():
+    chunks = [
+        RetrievedChunk(
+            content="P1 and P2 pump pressure checks. Check hydraulic pressure sensor.",
+            reference="13-25",
+        )
+    ]
+    raw = json.dumps(
+        {
+            "status": "answer",
+            "selections": [
+                {
+                    "index": 1,
+                    "confidence": 0.91,
+                    "evidence": "Paraphrased evidence which is not verbatim",
+                }
+            ],
+        }
+    )
+    result = _parse_rerank_result(
+        raw,
+        chunks,
+        ["P1 pump pressure", "hydraulic pressure sensor"],
+    )
+    assert [chunk.reference for chunk in result.chunks] == ["13-25"]
+    assert result.chunks[0].verified_evidence is None
+    assert result.reason == "selected_semantic_support"
+
+
+def test_safe_fallback_selects_best_supported_ranked_page():
+    chunks = [
+        RetrievedChunk(content="General maintenance information", reference="1-1"),
+        RetrievedChunk(
+            content="P1 pump pressure and hydraulic pressure sensor inspection",
+            reference="13-25",
+        ),
+    ]
+    fallback = _select_safe_fallback(
+        chunks,
+        ["P1 pump pressure", "hydraulic pressure sensor"],
+    )
+    assert fallback is not None
+    assert fallback.reference == "13-25"
+    assert fallback.verified_evidence is None
+
+
+def test_safe_fallback_rejects_weak_single_term_overlap():
+    chunk = RetrievedChunk(content="General pump maintenance", reference="1-1")
+    assert _candidate_support_score(chunk, ["pump pressure sensor"]) == 1
+    assert _select_safe_fallback([chunk], ["pump pressure sensor"]) is None
 
 
 def test_parse_rerank_result_returns_clarification_without_evidence():
