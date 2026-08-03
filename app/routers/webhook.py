@@ -11,7 +11,6 @@ from app.services.embedding_service import get_embedding
 from app.services.retrieval_service import retrieve_chunks
 from app.services.claude_service import (
     ask_llm,
-    get_ambiguity_clarification,
     infer_content_type_filter,
     infer_search_category_hint,
     rerank_chunks,
@@ -154,13 +153,6 @@ async def _handle_message(reply_token: str, user_id: str, question: str) -> None
             log_conversation(user_id, question, model_followup)
             return
 
-        clarification = get_ambiguity_clarification(question)
-        if clarification:
-            answer, images = _prepare_reply(clarification, [])
-            await reply_message(reply_token, answer, images)
-            log_conversation(user_id, question, answer)
-            return
-
         search_queries = await rewrite_search_queries(question)
         embedding_text = question
         if search_queries:
@@ -173,9 +165,7 @@ async def _handle_message(reply_token: str, user_id: str, question: str) -> None
         chunks = await retrieve_chunks(embedding, search_queries, content_type_filter)
         reranked = await rerank_chunks(question, chunks, search_queries)
         chunks = reranked.chunks
-        if reranked.clarification:
-            answer = reranked.clarification
-        elif chunks:
+        if chunks:
             answer = await ask_llm(question, chunks)
         else:
             answer = "ไม่พบหลักฐานที่ตรงกับอาการในฐานข้อมูล กรุณาระบุชิ้นส่วน ตำแหน่ง และลักษณะอาการเพิ่มเติม"

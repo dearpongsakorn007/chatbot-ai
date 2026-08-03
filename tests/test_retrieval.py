@@ -58,12 +58,9 @@ def test_parse_search_queries_removes_display_position_and_normalizes_pump_index
     ) == ["P1 pump pressure", "P1 pump pressure low"]
 
 
-def test_ambiguous_injector_wording_requests_clarification():
+def test_ambiguous_injector_wording_continues_without_clarification():
     question = "SK200-8 หัวฉีดน้ำมันดันออกหลุดออกมาเกิดจากอะไร"
-    clarification = get_ambiguity_clarification(question)
-    assert clarification is not None
-    assert "หลุดออกจากฝาสูบ" in clarification
-    assert "น้ำมันรั่ว" in clarification
+    assert get_ambiguity_clarification(question) is None
 
 
 def test_explicit_physical_or_leak_wording_skips_clarification():
@@ -249,6 +246,21 @@ def test_safe_fallback_rejects_weak_single_term_overlap():
     assert _select_safe_fallback([chunk], ["pump pressure sensor"]) is None
 
 
+def test_safe_fallback_can_use_top_ranked_page_without_asking_back():
+    chunk = RetrievedChunk(
+        content="Technical manual passage for the closest retrieved topic",
+        reference="10-1",
+        score=0.04,
+    )
+    fallback = _select_safe_fallback(
+        [chunk],
+        [],
+        allow_top_ranked=True,
+    )
+    assert fallback is not None
+    assert fallback.reference == "10-1"
+
+
 def test_parse_rerank_result_returns_clarification_without_evidence():
     chunks = [RetrievedChunk(content="Replace injector", reference="16-3")]
     raw = json.dumps(
@@ -261,7 +273,8 @@ def test_parse_rerank_result_returns_clarification_without_evidence():
     )
     result = _parse_rerank_result(raw, chunks)
     assert result.chunks == []
-    assert "หัวฉีดหลุด" in result.clarification
+    assert result.clarification is None
+    assert result.reason == "model_requested_clarification"
 
 
 def test_clean_answer_removes_model_generated_source_labels():

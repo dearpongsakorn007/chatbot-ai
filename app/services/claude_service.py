@@ -54,9 +54,9 @@ Decide whether the candidates directly support the customer's exact physical sym
 component, measurement, model, or error code.
 
 Rules:
-- If the wording can describe different failures that require different manual sections,
-  return status "clarify" and ask one short Thai clarification question.
-  Example ambiguity: a component physically came loose versus fluid leaked around it.
+- Never ask a clarification question. When wording can describe different failures, select
+  the candidate that supports the most explicit component, measurement, identifier, or
+  physical symptom and keep the answer within that supported scope.
 - For status "answer", select at most 2 candidates. Candidate 1 must contain the
   strongest direct evidence, and candidate 2 must support the same failure only.
 - Reject generic pages, nearby topics, and pages about a different system or component.
@@ -96,7 +96,6 @@ Rules:
 - If no candidate directly supports the question, return status "none".
 
 Return JSON only in exactly one of these shapes:
-{"status":"clarify","clarification":"คำถามภาษาไทยสั้น ๆ","selections":[]}
 {"status":"none","clarification":"","selections":[]}
 {"status":"answer","clarification":"","selections":[{"index":2,"confidence":0.92,"evidence":"verbatim quote"}]}
 """.strip()
@@ -155,38 +154,7 @@ def _question_cache_key(question: str) -> str:
 
 
 def get_ambiguity_clarification(question: str) -> str | None:
-    """Ask before retrieval when wording mixes fluid and physical detachment."""
-    normalized = question.casefold()
-    fluid_terms = ("น้ำมัน", "เชื้อเพลิง", "ดีเซล", "fuel", "diesel", " oil ")
-    separation_terms = (
-        "หลุด",
-        "เด้ง",
-        "ดันออก",
-        "โผล่ออก",
-        "loose",
-        "detached",
-        "popped out",
-        "came out",
-    )
-    explicit_leak_terms = ("รั่ว", "ซึม", "ไหลออก", "leak", "seep")
-    explicit_physical_terms = (
-        "จากฝาสูบ",
-        "ออกจากฝาสูบ",
-        "แคลมป์",
-        "ขายึด",
-        "น็อตยึด",
-        "clamp",
-        "holder",
-        "mounting bolt",
-    )
-    is_ambiguous = any(term in normalized for term in fluid_terms) and any(
-        term in normalized for term in separation_terms
-    )
-    is_explicit = any(term in normalized for term in explicit_leak_terms) or any(
-        term in normalized for term in explicit_physical_terms
-    )
-    if is_ambiguous and not is_explicit:
-        return "หมายถึงตัวหัวฉีดหลุดออกจากฝาสูบ หรือน้ำมันรั่วออกบริเวณหัวฉีดหรือท่อครับ?"
+    """Compatibility hook: technical questions now continue without asking back."""
     return None
 
 
@@ -374,6 +342,7 @@ def _candidate_support_score(
 def _select_safe_fallback(
     chunks: list[RetrievedChunk],
     search_queries: list[str] | None,
+    allow_top_ranked: bool = False,
 ) -> RetrievedChunk | None:
     scored = [
         (_candidate_support_score(chunk, search_queries), index, chunk)
@@ -383,6 +352,10 @@ def _select_safe_fallback(
         return None
     support, _, chunk = max(scored, key=lambda item: (item[0], -item[1]))
     if support < _SAFE_FALLBACK_MIN_SUPPORT:
+        if allow_top_ranked:
+            top_chunk = chunks[0]
+            if top_chunk.content.strip() and float(top_chunk.score or 0) > 0:
+                return top_chunk.model_copy(update={"verified_evidence": None})
         return None
     return chunk.model_copy(update={"verified_evidence": None})
 
@@ -435,12 +408,7 @@ def _parse_rerank_result(
 
     status = str(payload.get("status") or "").casefold()
     if status == "clarify":
-        clarification = " ".join(str(payload.get("clarification") or "").split())
-        if 10 <= len(clarification) <= 220:
-            return RerankResult(
-                chunks=[], clarification=clarification, reason="clarification"
-            )
-        return RerankResult(chunks=[], reason="invalid_clarification")
+        return RerankResult(chunks=[], reason="model_requested_clarification")
     if status != "answer":
         return RerankResult(chunks=[], reason=f"status_{status or 'missing'}")
 
@@ -591,14 +559,26 @@ async def rerank_chunks(
     search_queries: list[str] | None = None,
 ) -> RerankResult:
     """Use the LLM only as a strict relevance judge before answer generation."""
-    input_count = len(chunks)
-    chunks = _filter_scope_mismatches(question, chunks)
+    original_chunks = chunks
+    input_count = len(original_chunks)
+    chunks = _filter_scope_mismatches(question, original_chunks)
     if not chunks:
-        logger.info(
-            "rerank completed input=%d scoped=0 selected=0 reason=scope_mismatch fallback=false",
-            input_count,
+        fallback = _select_safe_fallback(
+            original_chunks,
+            search_queries,
+            allow_top_ranked=True,
         )
-        return RerankResult(chunks=[], reason="scope_mismatch")
+        logger.info(
+            "rerank completed input=%d scoped=0 selected=%d reason=scope_mismatch fallback=%s",
+            input_count,
+            int(bool(fallback)),
+            str(bool(fallback)).lower(),
+        )
+        if fallback:
+            return RerankResult(
+                chunks=[fallback], reason="fallback_after_scope_mismatch"
+            )
+        return RerankResult(chunks=[], reason="scope_mismatch_no_candidates")
 
     user_content = _build_rerank_content(question, chunks, search_queries)
     try:
@@ -625,8 +605,12 @@ async def rerank_chunks(
             raw = resp.choices[0].message.content or ""
         result = _parse_rerank_result(raw, chunks, search_queries)
         used_fallback = False
-        if not result.chunks and not result.clarification:
-            fallback = _select_safe_fallback(chunks, search_queries)
+        if not result.chunks:
+            fallback = _select_safe_fallback(
+                chunks,
+                search_queries,
+                allow_top_ranked=True,
+            )
             if fallback:
                 result = RerankResult(
                     chunks=[fallback], reason=f"fallback_after_{result.reason}"
@@ -642,7 +626,11 @@ async def rerank_chunks(
         )
         return result
     except Exception as exc:
-        fallback = _select_safe_fallback(chunks, search_queries)
+        fallback = _select_safe_fallback(
+            chunks,
+            search_queries,
+            allow_top_ranked=True,
+        )
         logger.warning(
             "rerank failed error_type=%s input=%d scoped=%d fallback=%s",
             type(exc).__name__,
