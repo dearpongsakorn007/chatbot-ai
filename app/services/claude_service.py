@@ -141,7 +141,7 @@ def get_ambiguity_clarification(question: str) -> str | None:
 
 
 # รูปแบบรหัส error ของ KOBELCO SK200-8 เช่น A015, B012, D063
-_ERROR_CODE_PATTERN = re.compile(r"\b[A-Za-z]\d{3}\b")
+_ERROR_CODE_PATTERN = re.compile(r"\b[A-Za-z]\d{3,4}\b")
 _ERROR_CODE_KEYWORDS = (
     "error code",
     "errorcode",
@@ -151,7 +151,26 @@ _ERROR_CODE_KEYWORDS = (
     "code error",
     "error",
 )
-ERROR_CODE_CONTENT_TYPES = ["error_code", "error_code_detail", "error_code_table"]
+ERROR_CODE_CONTENT_TYPES = [
+    "error_code",
+    "error_code_detail",
+    "error_code_table",
+    "error_code_index",
+]
+
+_MEASUREMENT_KEYWORDS = (
+    "ค่ามาตรฐาน", "วัดค่า", "แรงดัน", "แรงบิด", "โวลต์", "โอห์ม", "แอมป์", "อุณหภูมิ",
+    "standard value", "measurement", "pressure", "torque", "voltage", "resistance", "specification",
+)
+_SYMPTOM_KEYWORDS = (
+    "อาการ", "เสีย", "ไม่ทำงาน", "ไม่มีแรง", "ช้า", "รั่ว", "เสียง", "ร้อน", "ดับ", "สตาร์ท",
+    "เกิดจาก", "สาเหตุ", "trouble", "fault", "slow", "leak", "noise", "overheat", "no power",
+)
+_PROCEDURE_KEYWORDS = (
+    "วิธี", "ขั้นตอน", "ตรวจสอบ", "ถอด", "ประกอบ", "เปลี่ยน", "ติดตั้ง", "ปรับตั้ง",
+    "how to", "procedure", "inspection", "replace", "install", "remove", "adjust",
+)
+_PART_KEYWORDS = ("อะไหล่", "ชิ้นส่วน", "หมายเลขอะไหล่", "part number", "component")
 
 
 def infer_content_type_filter(question: str) -> list[str] | None:
@@ -164,6 +183,22 @@ def infer_content_type_filter(question: str) -> list[str] | None:
     has_keyword = any(keyword in normalized for keyword in _ERROR_CODE_KEYWORDS)
     if has_code_pattern or has_keyword:
         return list(ERROR_CODE_CONTENT_TYPES)
+    return None
+
+
+def infer_search_category_hint(question: str) -> str | None:
+    """ส่งคำใบ้หมวดหมู่ให้ vector search โดยไม่ใช้เป็น hard filter."""
+    normalized = question.casefold()
+    if infer_content_type_filter(question):
+        return "error code diagnosis cause remedy"
+    if any(keyword in normalized for keyword in _MEASUREMENT_KEYWORDS):
+        return "standard value measurement inspection"
+    if any(keyword in normalized for keyword in _SYMPTOM_KEYWORDS):
+        return "troubleshooting cause diagnosis remedy"
+    if any(keyword in normalized for keyword in _PROCEDURE_KEYWORDS):
+        return "procedure inspection adjustment"
+    if any(keyword in normalized for keyword in _PART_KEYWORDS):
+        return "component part number removal installation"
     return None
 
 

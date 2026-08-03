@@ -1,16 +1,16 @@
+import hashlib
 import logging
-from app.db.supabase_client import get_supabase
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("repair-bot")
 
 
 def log_conversation(user_id: str, question: str, answer: str) -> None:
-    """บันทึกบทสนทนาลง Supabase สำหรับ debug/ปรับปรุง retrieval ทีหลัง"""
-    try:
-        supabase = get_supabase()
-        supabase.table("conversation_logs").insert(
-            {"user_id": user_id, "question": question, "answer": answer}
-        ).execute()
-    except Exception as e:
-        logger.error(f"log_conversation failed: {e}")
+    """บันทึกเฉพาะสถานะแบบไม่เปิดเผยข้อความ และไม่เขียนลงตารางที่ไม่มีอยู่."""
+    user_ref = hashlib.sha256(user_id.encode("utf-8")).hexdigest()[:12]
+    logger.info(
+        "conversation handled user=%s question_chars=%d answer_chars=%d",
+        user_ref,
+        len(question),
+        len(answer),
+    )

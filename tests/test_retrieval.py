@@ -5,6 +5,7 @@ from app.services.claude_service import (
     _cache_search_queries,
     _clean_answer,
     get_ambiguity_clarification,
+    infer_search_category_hint,
     _question_cache_key,
     _search_query_cache,
     _parse_rerank_result,
@@ -159,3 +160,10 @@ def test_rank_results_breaks_equal_scores_by_stable_id():
         limit=2,
     )
     assert [row["id"] for row in ranked] == ["a", "b"]
+
+
+def test_search_category_hint_routes_common_question_shapes_without_hard_filter():
+    assert infer_search_category_hint("ปั๊มมีแรงดันมาตรฐานเท่าไหร่") == "standard value measurement inspection"
+    assert infer_search_category_hint("รถไม่มีแรงและมีเสียงหอน") == "troubleshooting cause diagnosis remedy"
+    assert infer_search_category_hint("วิธีถอดปั๊มไฮดรอลิก") == "procedure inspection adjustment"
+    assert infer_search_category_hint("รหัส P0217") == "error code diagnosis cause remedy"

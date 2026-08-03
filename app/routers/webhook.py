@@ -13,6 +13,7 @@ from app.services.claude_service import (
     ask_llm,
     get_ambiguity_clarification,
     infer_content_type_filter,
+    infer_search_category_hint,
     rerank_chunks,
     rewrite_search_queries,
 )
@@ -164,6 +165,9 @@ async def _handle_message(reply_token: str, user_id: str, question: str) -> None
         embedding_text = question
         if search_queries:
             embedding_text += f"\nTechnical manual terms: {search_queries[0]}"
+        category_hint = infer_search_category_hint(question)
+        if category_hint:
+            embedding_text += f"\nManual category: {category_hint}"
         embedding = await get_embedding(embedding_text)
         content_type_filter = infer_content_type_filter(question)
         chunks = await retrieve_chunks(embedding, search_queries, content_type_filter)

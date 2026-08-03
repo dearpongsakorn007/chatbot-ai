@@ -27,7 +27,7 @@ class Settings(BaseSettings):
     # App
     llm_provider: str = "groq"  # "groq" หรือ "claude" สลับได้โดยไม่แก้โค้ด
     llm_max_tokens: int = 4000
-    top_k: int = 5
+    top_k: int = 10
 
 
 settings = Settings()

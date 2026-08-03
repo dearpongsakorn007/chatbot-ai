@@ -124,7 +124,8 @@ async def retrieve_chunks(
     section_code_filter: list[str] | None = None,
 ) -> list[RetrievedChunk]:
     supabase = get_supabase()
-    candidate_count = max(settings.top_k * 2, 10)
+    # ดึงกว้างกว่าจำนวนที่จะส่งให้ reranker เพื่อไม่ให้หน้าที่ถูกต้องหลุดจาก top 5 เร็วเกินไป
+    candidate_count = max(settings.top_k * 3, 30)
     vector_result = supabase.rpc(
         "match_documents",
         {
@@ -137,6 +138,7 @@ async def retrieve_chunks(
     ).execute()
 
     result_groups: list[tuple[float, list[dict]]] = []
+    fulltext_counts: list[int] = []
     for query_index, fulltext_query in enumerate((search_queries or [])[:3]):
         try:
             fulltext_result = supabase.rpc(
@@ -151,11 +153,20 @@ async def retrieve_chunks(
             result_groups.append(
                 (FULLTEXT_WEIGHTS[query_index], fulltext_result.data or [])
             )
+            fulltext_counts.append(len(fulltext_result.data or []))
         except Exception as exc:
             logger.warning("full-text search failed: %s", exc)
 
     result_groups.append((VECTOR_WEIGHT, vector_result.data or []))
     rows = _rank_results(result_groups, settings.top_k)
+    logger.info(
+        "retrieval completed vector=%d fulltext=%s ranked=%d content_types=%s sections=%s",
+        len(vector_result.data or []),
+        fulltext_counts,
+        len(rows),
+        content_type_filter,
+        section_code_filter,
+    )
     reference_images = _find_reference_images(supabase, rows)
     chunks = []
     for row in rows:
