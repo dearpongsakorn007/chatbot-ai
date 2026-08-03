@@ -5,6 +5,7 @@ from app.services.claude_service import (
     _cache_search_queries,
     _build_context,
     _clean_answer,
+    _filter_scope_mismatches,
     get_ambiguity_clarification,
     infer_search_category_hint,
     _question_cache_key,
@@ -47,6 +48,12 @@ def test_parse_search_queries_keeps_exact_error_code_and_useful_terms():
     assert _parse_search_queries(
         "P0217\npump pressure\nslow hydraulic operation"
     ) == ["P0217", "pump pressure", "slow hydraulic operation"]
+
+
+def test_parse_search_queries_removes_display_position_and_normalizes_pump_index():
+    assert _parse_search_queries(
+        "DIS 3 pump1\npump1 pressure low\ndisplay 2 service manual"
+    ) == ["P1 pump pressure", "P1 pump pressure low"]
 
 
 def test_ambiguous_injector_wording_requests_clarification():
@@ -121,6 +128,71 @@ def test_parse_rerank_result_rejects_low_confidence_or_invented_evidence():
     )
     assert _parse_rerank_result(low_confidence, chunks).chunks == []
     assert _parse_rerank_result(invented, chunks).chunks == []
+
+
+def test_parse_rerank_result_accepts_ordered_verbatim_table_cells():
+    chunks = [
+        RetrievedChunk(
+            content=(
+                "Slow boom up, insufficient power No.\n"
+                "Pump pressure sensor\n"
+                "Carry out service diagnosis for P1, P2 pump pressures in operation."
+            ),
+            reference="47-7",
+        )
+    ]
+    raw = json.dumps(
+        {
+            "status": "answer",
+            "selections": [
+                {
+                    "index": 1,
+                    "confidence": 0.94,
+                    "evidence": (
+                        "Slow boom up, insufficient power No. | ... | "
+                        "Pump pressure sensor | Carry out service diagnosis for P1, P2 "
+                        "pump pressures in operation."
+                    ),
+                }
+            ],
+        }
+    )
+    result = _parse_rerank_result(raw, chunks)
+    assert [chunk.reference for chunk in result.chunks] == ["47-7"]
+
+
+def test_parse_rerank_result_accepts_reordered_verbatim_table_cells():
+    chunks = [RetrievedChunk(content="First diagnostic cell\nSecond diagnostic cell")]
+    raw = json.dumps(
+        {
+            "status": "answer",
+            "selections": [
+                {
+                    "index": 1,
+                    "confidence": 0.95,
+                    "evidence": "Second diagnostic cell | First diagnostic cell",
+                }
+            ],
+        }
+    )
+    assert len(_parse_rerank_result(raw, chunks).chunks) == 1
+
+
+def test_parse_rerank_result_rejects_invented_table_cell():
+    chunks = [RetrievedChunk(content="First diagnostic cell\nSecond diagnostic cell")]
+    raw = json.dumps(
+        {
+            "status": "answer",
+            "selections": [
+                {
+                    "index": 1,
+                    "confidence": 0.95,
+                    "evidence": "First diagnostic cell | Invented corrective action",
+                }
+            ],
+        }
+    )
+    assert _parse_rerank_result(raw, chunks).chunks == []
 
 
 def test_parse_rerank_result_returns_clarification_without_evidence():
@@ -204,3 +276,17 @@ def test_search_category_hint_routes_common_question_shapes_without_hard_filter(
     assert infer_search_category_hint("รถไม่มีแรงและมีเสียงหอน") == "troubleshooting cause diagnosis remedy"
     assert infer_search_category_hint("วิธีถอดปั๊มไฮดรอลิก") == "procedure inspection adjustment"
     assert infer_search_category_hint("รหัส P0217") == "error code diagnosis cause remedy"
+
+
+def test_scope_filter_rejects_specific_actuator_for_general_machine_symptom():
+    chunks = [
+        RetrievedChunk(content="Section: troubleshooting\nSlow boom up, insufficient power"),
+        RetrievedChunk(content="Section: pump adjustment\nP1 and P2 pump pressure checks"),
+    ]
+    filtered = _filter_scope_mismatches("รถทำงานช้าและแรงดันปั๊มต่ำ", chunks)
+    assert [chunk.content for chunk in filtered] == [chunks[1].content]
+
+
+def test_scope_filter_keeps_actuator_page_when_question_names_it():
+    chunk = RetrievedChunk(content="Section: troubleshooting\nSlow boom up, insufficient power")
+    assert _filter_scope_mismatches("บูมยกช้า", [chunk]) == [chunk]

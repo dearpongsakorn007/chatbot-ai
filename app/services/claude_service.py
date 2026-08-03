@@ -58,6 +58,9 @@ Rules:
   strongest direct evidence, and candidate 2 must support the same failure only.
 - Reject generic pages, nearby topics, and pages about a different system or component.
 - Matching only a machine model, component name, or broad symptom is not enough.
+- Do not map a whole-machine symptom such as generally slow or low power to one specific
+  actuator/function (boom, arm, bucket, swing, or travel) unless the customer explicitly
+  named that function. Prefer a general pump/engine diagnostic page for a general symptom.
 - A generic statement such as faulty injector or replace injector does not prove that
   an injector physically detached, came loose, or leaked. The evidence must state the
   same failure mode requested by the customer.
@@ -78,8 +81,14 @@ Rules:
 - When the customer reports an abnormal value, a page for the same component/property that
   provides its test condition, expected range, or ordered checks is direct evidence. It does
   not need to repeat the customer's exact numeric value or operational symptom.
-- Every selection must include one short, contiguous, verbatim quote copied from that
-  candidate which directly proves its relevance. Never paraphrase the evidence.
+- Treat standalone monitor labels such as "DIS 3", "display 3", "screen 3", or a channel
+  number as a readout position, not an error code or failure-type number, unless the customer
+  explicitly says it is an error code. Never select an error-code table only because its
+  number matches the display/channel number.
+- Every selection must include short verbatim evidence copied from that candidate which
+  directly proves its relevance. For prose, use one contiguous quote. For a structured
+  table row, copy 2-4 exact cells in reading order and separate them with " | ". Never
+  paraphrase cells and never use ellipses to replace meaningful text.
 - Confidence must reflect direct support, not topical similarity.
 - If no candidate directly supports the question, return status "none".
 
@@ -108,10 +117,12 @@ SYSTEM_PROMPT = """
 13. ใช้หัวข้อ "สาเหตุ:" เฉพาะเมื่อข้อมูลอ้างอิงระบุความสัมพันธ์ว่าเป็นสาเหตุโดยตรง ห้ามเปลี่ยนรายการตรวจสอบให้กลายเป็นข้อสรุปว่าชิ้นส่วนเสีย
 14. หากคู่มือให้ตรวจหลายจุดก่อนวินิจฉัย ให้ใช้หัวข้อ "ตรวจสอบ:" และเรียงรายการสำคัญตามลำดับในคู่มือไม่เกิน 4 รายการ ห้ามสรุปให้เปลี่ยนอะไหล่ตัวแรกทันที
 15. ใช้หัวข้อ "วิธีแก้:" เฉพาะเมื่อข้อมูลอ้างอิงระบุการแก้ไขสำหรับเงื่อนไขที่ยืนยันแล้วโดยตรง หากยังเป็นเพียงขั้นตอนวินิจฉัยให้แสดงเฉพาะ "ตรวจสอบ:"
+15.1 ข้อความว่า "ตรวจว่าชิ้นส่วนทำงานปกติ" เป็นเพียงขั้นตอนตรวจสอบ ไม่ได้อนุญาตให้สรุปว่าเสียหรือให้เปลี่ยนชิ้นส่วนนั้น
 16. ค่ามาตรฐานต้องคงตัวเลข หน่วย ชิ้นส่วน และเงื่อนไขการวัดจากคู่มือ ห้ามนำค่าจากคนละโหมดหรือคนละเงื่อนไขมาเปรียบเทียบกัน
 17. หลักฐานที่ยืนยันเป็นเพียงจุดบอกว่าหน้านี้ตรงคำถาม ให้ใช้เนื้อหาเต็มของข้อมูลหลักเพื่อรักษาบริบทและลำดับ แต่ห้ามนำหัวข้อข้างเคียงที่ไม่เกี่ยวข้องมาตอบ
 18. เมื่อกล่าวถึงสาเหตุ ให้ขึ้นต้นด้วย "สาเหตุ:" และบอกข้อมูลโดยตรง ห้ามใช้คำว่า "อาจ" หรือ "อาจจะ"
 19. ทุกบรรทัดของคำตอบต้องลงท้ายด้วยคำว่า "ครับ"
+20. ใช้คำศัพท์ช่างให้คงที่: relief valve = วาล์วระบายแรงดัน, pump proportional valve = วาล์วสัดส่วนปั๊ม และ pump regulator = เรกูเลเตอร์ปั๊ม ห้ามแปล relief valve เป็นลิฟท์วาล์ว
 """.strip()
 
 _anthropic_client = AsyncAnthropic(api_key=settings.anthropic_api_key)
@@ -119,6 +130,13 @@ _groq_client = AsyncOpenAI(api_key=settings.groq_api_key, base_url="https://api.
 _SEARCH_QUERY_CACHE_MAX = 512
 _MIN_EVIDENCE_CONFIDENCE = 0.8
 _search_query_cache: OrderedDict[str, tuple[str, ...]] = OrderedDict()
+_FUNCTION_SCOPE_TERMS = {
+    "boom": ("boom", "บูม"),
+    "arm": ("arm", "อาร์ม"),
+    "bucket": ("bucket", "บุ้งกี๋", "บุ้งกี๊"),
+    "swing": ("swing", "สวิง"),
+    "travel": ("travel", "เดิน", "ตีนตะขาบ"),
+}
 
 
 @dataclass
@@ -244,6 +262,7 @@ def _parse_search_queries(raw: str) -> list[str]:
         query = re.sub(r"^\s*(?:[-•*]|\d+[.)])\s*", "", line)
         query = query.strip().strip('"\'`')
         query = " ".join(query.split())
+        query = _normalize_search_query(query)
         if not query or len(query) > 120 or _is_low_information_search_query(query):
             continue
         normalized = query.casefold()
@@ -260,6 +279,24 @@ _GENERIC_SEARCH_TERMS = {
 }
 
 
+def _normalize_search_query(query: str) -> str:
+    """Remove UI labels and normalize common indexed-component notation."""
+    query = re.sub(
+        r"\b(?:dis|display|screen|channel)\s*[-:#]?\s*\d+\b",
+        " ",
+        query,
+        flags=re.IGNORECASE,
+    )
+    query = re.sub(
+        r"\bpump\s*[-#]?\s*([12])\b",
+        lambda match: f"P{match.group(1)} pump pressure",
+        query,
+        flags=re.IGNORECASE,
+    )
+    query = re.sub(r"\bpressure\s+pressure\b", "pressure", query, flags=re.IGNORECASE)
+    return " ".join(query.split())
+
+
 def _is_low_information_search_query(query: str) -> bool:
     """Reject model-only/manual queries which overwhelm full-text rank fusion."""
     normalized = query.casefold()
@@ -268,19 +305,54 @@ def _is_low_information_search_query(query: str) -> bool:
     normalized = re.sub(r"\b(?:kobelco\s*)?sk\s*[- ]?\d{2,4}(?:-\d+)?\b", " ", normalized)
     tokens = re.findall(r"[a-z0-9][a-z0-9_-]*", normalized)
     useful_tokens = []
+    has_specific_identifier = False
     for token in tokens:
         plain = token.strip("_-")
         if not plain or plain.isdigit() or plain in _GENERIC_SEARCH_TERMS:
             continue
         has_letter = any(char.isalpha() for char in plain)
         has_digit = any(char.isdigit() for char in plain)
+        if has_letter and has_digit and len(plain) >= 5:
+            has_specific_identifier = True
         if (has_letter and len(plain) >= 3) or (has_letter and has_digit and len(plain) >= 4):
             useful_tokens.append(plain)
-    return not useful_tokens
+    return not has_specific_identifier and len(useful_tokens) < 2
 
 
 def _normalize_evidence(text: str) -> str:
     return " ".join(text.casefold().split())
+
+
+def _evidence_is_supported(content: str, evidence: str) -> bool:
+    """Verify either one prose quote or ordered verbatim cells from an OCR table."""
+    normalized_content = _normalize_evidence(content)
+    normalized_evidence = _normalize_evidence(evidence)
+    if normalized_evidence in normalized_content:
+        return True
+
+    raw_segments = re.split(r"\s*(?:\|+|\.{3,}|…+)\s*", evidence)
+    segments = [
+        _normalize_evidence(segment.strip(" |.;"))
+        for segment in raw_segments
+        if len(_normalize_evidence(segment.strip(" |.;"))) >= 8
+    ]
+    if len(segments) < 2:
+        return False
+
+    position = 0
+    ordered = True
+    for segment in segments:
+        found_at = normalized_content.find(segment, position)
+        if found_at < 0:
+            ordered = False
+            break
+        position = found_at + len(segment)
+    if ordered:
+        return True
+
+    # Models sometimes reorder verified table cells to express symptom -> condition.
+    # Still require every complete cell to exist verbatim on the same selected page.
+    return all(segment in normalized_content for segment in segments)
 
 
 def _parse_rerank_result(raw: str, chunks: list[RetrievedChunk]) -> RerankResult:
@@ -319,9 +391,7 @@ def _parse_rerank_result(raw: str, chunks: list[RetrievedChunk]) -> RerankResult
         ):
             continue
 
-        normalized_content = _normalize_evidence(chunks[index].content)
-        normalized_evidence = _normalize_evidence(evidence)
-        if normalized_evidence not in normalized_content:
+        if not _evidence_is_supported(chunks[index].content, evidence):
             continue
 
         seen_indices.add(index)
@@ -355,6 +425,37 @@ def _build_rerank_content(
         f"Technical search intent: {search_intent}\n\n"
         + "\n\n---\n\n".join(candidates)
     )
+
+
+def _text_has_scope_term(text: str, term: str) -> bool:
+    if term.isascii():
+        return bool(re.search(rf"\b{re.escape(term)}\b", text, flags=re.IGNORECASE))
+    return term in text
+
+
+def _filter_scope_mismatches(
+    question: str,
+    chunks: list[RetrievedChunk],
+) -> list[RetrievedChunk]:
+    """Do not map a general symptom to a specific actuator the user never named."""
+    question_scopes = {
+        scope
+        for scope, terms in _FUNCTION_SCOPE_TERMS.items()
+        if any(_text_has_scope_term(question, term) for term in terms)
+    }
+    filtered = []
+    for chunk in chunks:
+        # Metadata, heading, and first row identify the page's functional scope.
+        heading_area = chunk.content[:2000]
+        chunk_scopes = {
+            scope
+            for scope, terms in _FUNCTION_SCOPE_TERMS.items()
+            if any(_text_has_scope_term(heading_area, term) for term in terms)
+        }
+        if chunk_scopes and not chunk_scopes.intersection(question_scopes):
+            continue
+        filtered.append(chunk)
+    return filtered
 
 
 async def rewrite_search_queries(question: str) -> list[str]:
@@ -402,6 +503,7 @@ async def rerank_chunks(
     search_queries: list[str] | None = None,
 ) -> RerankResult:
     """Use the LLM only as a strict relevance judge before answer generation."""
+    chunks = _filter_scope_mismatches(question, chunks)
     if not chunks:
         return RerankResult(chunks=[])
 
