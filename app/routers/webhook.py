@@ -14,6 +14,7 @@ from app.services.line_service import reply_message
 from app.utils.logger import log_conversation, logger
 
 router = APIRouter()
+ANSWER_GREETING = "สวัสดีครับช่างเต้ครับ"
 WARNING_TEXT = "คำเตือน: ควรให้ช่างยืนยันหน้างาน"
 CONVERSATION_OPENERS = {
     "สวัสดี",
@@ -86,7 +87,7 @@ def _prepare_reply(
     answer: str,
     chunks: list[RetrievedChunk],
 ) -> tuple[str, list[tuple[str, str]]]:
-    parts = [answer.strip()]
+    parts = [ANSWER_GREETING, answer.strip()]
     images: list[tuple[str, str]] = []
     # Retrieval is deterministically ranked; the first eligible result is the
     # single locked reference for both the page label and image.

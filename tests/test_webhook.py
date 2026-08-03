@@ -63,6 +63,7 @@ def test_prepare_reply_locks_the_first_ranked_image_reference():
         ),
     ]
     text, images = _prepare_reply("คำตอบ", chunks)
+    assert text.startswith("สวัสดีครับช่างเต้ครับ\n\nคำตอบ")
     assert "หน้า 21-33" in text
     assert "22-3" not in text
     assert images == [

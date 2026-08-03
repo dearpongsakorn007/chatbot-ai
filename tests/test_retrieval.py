@@ -38,6 +38,11 @@ def test_clean_answer_removes_model_generated_source_labels():
     assert _clean_answer(answer) == "ค่ามาตรฐาน 27.5 Ω\nตรวจที่ขา 1-5"
 
 
+def test_clean_answer_replaces_uncertain_cause_wording():
+    answer = "สาเหตุอาจมาจากแรงดันปั๊มต่ำ ซึ่งอาจจะทำให้เครื่องช้า"
+    assert _clean_answer(answer) == "สาเหตุ: แรงดันปั๊มต่ำ ซึ่งทำให้เครื่องช้า"
+
+
 def test_question_cache_normalizes_case_and_whitespace():
     assert _question_cache_key("  SK200-8   Pump  ") == "sk200-8 pump"
 
