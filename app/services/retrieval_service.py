@@ -12,6 +12,9 @@ logger = logging.getLogger("repair-bot")
 RRF_K = 60
 FULLTEXT_WEIGHTS = (3.0, 1.5, 1.0)
 VECTOR_WEIGHT = 2.0
+# ต้องตรงกับ document_id_exact ที่ match_documents/search_sk2008_fulltext ใช้กรองอยู่แล้ว
+# กันไม่ให้รูปอ้างอิงหลุดไปหยิบจากข้อมูลชุดเก่า (v1/v2/v3/...) ที่เลขหน้าไม่ตรงกับ v4
+CURRENT_DOCUMENT_ID = "kobelco-sk2008-repair-ocr-v4"
 
 
 def _row_key(row: dict) -> str:
@@ -74,12 +77,15 @@ def _find_reference_images(supabase, rows: list[dict]) -> dict[tuple[str, str], 
         if source_file and pdf_page is not None:
             pages_by_source.setdefault(source_file, set()).add(pdf_page)
 
-    images_by_page: dict[tuple[str, str], dict] = {}
+    images_by_page: dict[tuple[str, str, str], dict] = {}
     for source_file, pdf_pages in pages_by_source.items():
         try:
             image_result = (
                 supabase.table("documents_gemini")
                 .select("metadata")
+                # ล็อกเวอร์ชันข้อมูลให้ตรงกับที่ retrieve_chunks ใช้ค้นหาจริง
+                # ป้องกันไม่ให้หยิบรูปจากข้อมูลชุดเก่าที่เลขหน้าไม่ได้อ้างอิงเนื้อหาเดียวกัน
+                .eq("metadata->>document_id", CURRENT_DOCUMENT_ID)
                 .eq("metadata->>source_file", source_file)
                 .in_("metadata->>pdf_page_start", sorted(pdf_pages, key=str))
                 .not_.is_("metadata->>image_url", "null")
@@ -96,7 +102,10 @@ def _find_reference_images(supabase, rows: list[dict]) -> dict[tuple[str, str], 
             pdf_page = metadata.get("pdf_page_start")
             if not image_url or pdf_page is None:
                 continue
-            key = (source_file, str(pdf_page))
+            # ถ้าแถวนั้นมีรหัส error code ให้ผูกรูปเข้ากับรหัสนั้นโดยเฉพาะ
+            # กันกรณีหน้าเดียวกันมีหลาย error code/หัวข้อปนกัน (matched by page only ผิดได้)
+            code = str(metadata.get("code") or "")
+            key = (source_file, str(pdf_page), code)
             images_by_page.setdefault(
                 key,
                 {
@@ -111,6 +120,8 @@ def _find_reference_images(supabase, rows: list[dict]) -> dict[tuple[str, str], 
 async def retrieve_chunks(
     query_embedding: list[float],
     search_queries: list[str] | None = None,
+    content_type_filter: list[str] | None = None,
+    section_code_filter: list[str] | None = None,
 ) -> list[RetrievedChunk]:
     supabase = get_supabase()
     candidate_count = max(settings.top_k * 2, 10)
@@ -120,6 +131,8 @@ async def retrieve_chunks(
             "query_embedding": query_embedding,
             "match_count": candidate_count,
             "filter": {},
+            "content_type_filter": content_type_filter,
+            "section_code_filter": section_code_filter,
         },
     ).execute()
 
@@ -131,6 +144,8 @@ async def retrieve_chunks(
                 {
                     "search_query": fulltext_query,
                     "result_limit": candidate_count,
+                    "content_type_filter": content_type_filter,
+                    "section_code_filter": section_code_filter,
                 },
             ).execute()
             result_groups.append(
@@ -150,9 +165,15 @@ async def retrieve_chunks(
             or metadata.get("manual_page")
             or metadata.get("pdf_page_start")
         )
-        image = reference_images.get(
-            (str(metadata.get("source_file") or ""), str(metadata.get("pdf_page_start")))
-        ) or {}
+        source_file = str(metadata.get("source_file") or "")
+        pdf_page = str(metadata.get("pdf_page_start"))
+        code = str(metadata.get("code") or "")
+        # หา image ที่ผูกกับ error code เดียวกันก่อน ถ้าไม่มีค่อย fallback เป็นรูปของหน้านั้นแบบไม่ระบุ code
+        image = (
+            reference_images.get((source_file, pdf_page, code))
+            or reference_images.get((source_file, pdf_page, ""))
+            or {}
+        )
         chunks.append(
             RetrievedChunk(
                 content=row.get("content", ""),

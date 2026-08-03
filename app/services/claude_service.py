@@ -84,6 +84,7 @@ SYSTEM_PROMPT = """
 11. หากคำถามระบุชื่อชิ้นส่วนไม่ชัด แต่ข้อมูลอ้างอิงเป็นชิ้นส่วนชนิดเฉพาะ ให้ระบุชื่อชิ้นส่วนนั้นสั้น ๆ ก่อนบอกค่า ห้ามเหมารวมว่าเป็นค่าของทุกชิ้นส่วน
 12. ให้ยึดข้อมูลหลักอันดับ 1 เป็นคำตอบหลัก ใช้ข้อมูลอันดับอื่นเฉพาะเมื่อสนับสนุนเรื่องเดียวกัน ห้ามนำข้อมูลคนละระบบหรือคนละอาการมารวมกัน
 13. เมื่อกล่าวถึงสาเหตุ ให้ขึ้นต้นด้วย "สาเหตุ:" และบอกข้อมูลโดยตรง ห้ามใช้คำว่า "อาจ" หรือ "อาจจะ"
+14. ทุกบรรทัดของคำตอบต้องลงท้ายด้วยคำว่า "ครับ"
 """.strip()
 
 _anthropic_client = AsyncAnthropic(api_key=settings.anthropic_api_key)
@@ -136,6 +137,33 @@ def get_ambiguity_clarification(question: str) -> str | None:
     )
     if is_ambiguous and not is_explicit:
         return "หมายถึงตัวหัวฉีดหลุดออกจากฝาสูบ หรือน้ำมันรั่วออกบริเวณหัวฉีดหรือท่อครับ?"
+    return None
+
+
+# รูปแบบรหัส error ของ KOBELCO SK200-8 เช่น A015, B012, D063
+_ERROR_CODE_PATTERN = re.compile(r"\b[A-Za-z]\d{3}\b")
+_ERROR_CODE_KEYWORDS = (
+    "error code",
+    "errorcode",
+    "โค้ด",
+    "รหัสเออเรอร์",
+    "รหัส error",
+    "code error",
+    "error",
+)
+ERROR_CODE_CONTENT_TYPES = ["error_code", "error_code_detail", "error_code_table"]
+
+
+def infer_content_type_filter(question: str) -> list[str] | None:
+    """จำกัดการค้นหาเฉพาะหมวด error code เมื่อคำถามระบุรหัส/พูดถึง error code ชัดเจน
+    ป้องกันไม่ให้ผลลัพธ์ปนกับ chunk หมวดอื่น (procedure/table/narrative) ที่ไม่เกี่ยวกับรหัสที่ถาม
+    คืนค่า None เมื่อไม่ชัดเจนพอ เพื่อไม่ให้จำกัดผลค้นหาผิดสำหรับคำถามทั่วไป
+    """
+    normalized = question.casefold()
+    has_code_pattern = bool(_ERROR_CODE_PATTERN.search(question))
+    has_keyword = any(keyword in normalized for keyword in _ERROR_CODE_KEYWORDS)
+    if has_code_pattern or has_keyword:
+        return list(ERROR_CODE_CONTENT_TYPES)
     return None
 
 

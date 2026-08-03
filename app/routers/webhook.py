@@ -12,6 +12,7 @@ from app.services.retrieval_service import retrieve_chunks
 from app.services.claude_service import (
     ask_llm,
     get_ambiguity_clarification,
+    infer_content_type_filter,
     rerank_chunks,
     rewrite_search_queries,
 )
@@ -19,8 +20,8 @@ from app.services.line_service import reply_message
 from app.utils.logger import log_conversation, logger
 
 router = APIRouter()
-ANSWER_GREETING = "สวัสดีครับช่างเต้ครับ"
-WARNING_TEXT = "คำเตือน: ควรให้ช่างยืนยันหน้างาน"
+ANSWER_GREETING = "สวัสดีครับช่างเต้ TIS ครับ"
+WARNING_TEXT = "คำเตือน: ควรให้ช่างยืนยันหน้างานครับ"
 CONVERSATION_OPENERS = {
     "สวัสดี",
     "สวัสดีครับ",
@@ -47,6 +48,11 @@ CONVERSATION_OPENERS = {
     "goodevening",
     "มีใครอยู่ไหม",
     "อยู่ไหม",
+    "อยู่มั้ย",
+    "อยู่มั้ยครับ",
+    "อยู่มั้ยค่ะ",
+    "อยู่มั้ยคับ",
+    "อยู่หรือเปล่า",
     "เริ่มต้น",
     "เริ่มใช้งาน",
     "เริ่มสนทนา",
@@ -58,11 +64,13 @@ CONVERSATION_OPENERS = {
     "ทำอะไรได้บ้าง",
     "แนะนำหน่อย",
 }
-OPENING_RESPONSES = (
-    "สวัสดีครับ ต้องการสอบถามเรื่องใดครับ เช่น วิธีใช้งาน การบำรุงรักษา อาการเสีย หรือ Error Code?",
-    "ยินดีช่วยครับ เครื่องมีอาการอย่างไร หรือมี Error Code อะไรขึ้นครับ? กรุณาระบุรุ่นเครื่องด้วยครับ",
-    "ต้องการให้ช่วยตรวจสอบเรื่องใดครับ? บอกรุ่นเครื่อง อาการที่พบ หรือ Error Code ได้เลยครับ",
-    "สอบถามได้เลยครับ ต้องการข้อมูลด้านการใช้งาน การซ่อมบำรุง หรือการแก้ Error Code เรื่องใดครับ?",
+OPENING_RESPONSE = "สวัสดีครับ บริษัท TIS คุณลูกค้าสนใจสอบถามรถรุ่นไหนครับ"
+MODEL_ONLY_PATTERN = re.compile(
+    r"^\s*(?:(?:รถ\s*)?รุ่น\s*)?"
+    r"(?:(?:kobelco|komatsu|hitachi|volvo|cat(?:erpillar)?)\s+)?"
+    r"([a-z]{2,10}\s*[- ]?\s*\d{2,4}(?:\s*[- ]\s*\d{1,3})?[a-z0-9-]*)"
+    r"\s*(?:ครับ|ค่ะ|คับ)?\s*$",
+    re.IGNORECASE,
 )
 
 
@@ -83,16 +91,36 @@ def _is_conversation_opener(text: str) -> bool:
 
 
 def _opening_response(text: str) -> str:
-    normalized = _normalize_message(text)
-    index = sum(map(ord, normalized)) % len(OPENING_RESPONSES)
-    return OPENING_RESPONSES[index]
+    return OPENING_RESPONSE
+
+
+def _model_followup_response(text: str) -> str | None:
+    match = MODEL_ONLY_PATTERN.fullmatch(text)
+    if not match:
+        return None
+    model = re.sub(r"\s+", "", match.group(1)).upper()
+    return (
+        f"รุ่น {model} นะครับ ต้องการสอบถามเรื่องใดครับ เช่น วิธีใช้งาน "
+        "การบำรุงรักษา อาการเสีย หรือ Error Code อะไรครับ?"
+    )
+
+
+def _ensure_polite_ending(text: str) -> str:
+    """เติมคำลงท้ายให้ทุกบรรทัดของคำตอบ โดยไม่เติมซ้ำเมื่อมีอยู่แล้ว."""
+    lines = []
+    for raw_line in text.strip().splitlines():
+        line = raw_line.rstrip()
+        if line and not re.search(r"ครับ[.!?…]*$", line):
+            line = f"{line}ครับ"
+        lines.append(line)
+    return "\n".join(lines)
 
 
 def _prepare_reply(
     answer: str,
     chunks: list[RetrievedChunk],
 ) -> tuple[str, list[tuple[str, str]]]:
-    parts = [ANSWER_GREETING, answer.strip()]
+    parts = [ANSWER_GREETING, _ensure_polite_ending(answer)]
     images: list[tuple[str, str]] = []
     # The reranker's first result is the only permitted page/image reference.
     reference_chunk = chunks[0] if chunks and chunks[0].image_url else None
@@ -105,7 +133,7 @@ def _prepare_reply(
             )
         )
         reference = reference_chunk.reference or "ไม่ระบุหน้า"
-        parts.append(f"รูปอ้างอิง [1]: หน้า {reference}")
+        parts.append(f"รูปอ้างอิง: หน้า {reference}")
 
     parts.append(WARNING_TEXT)
     return "\n\n".join(parts), images
@@ -117,6 +145,12 @@ async def _handle_message(reply_token: str, user_id: str, question: str) -> None
             answer = _opening_response(question)
             await reply_message(reply_token, answer)
             log_conversation(user_id, question, answer)
+            return
+
+        model_followup = _model_followup_response(question)
+        if model_followup:
+            await reply_message(reply_token, model_followup)
+            log_conversation(user_id, question, model_followup)
             return
 
         clarification = get_ambiguity_clarification(question)
@@ -131,7 +165,8 @@ async def _handle_message(reply_token: str, user_id: str, question: str) -> None
         if search_queries:
             embedding_text += f"\nTechnical manual terms: {search_queries[0]}"
         embedding = await get_embedding(embedding_text)
-        chunks = await retrieve_chunks(embedding, search_queries)
+        content_type_filter = infer_content_type_filter(question)
+        chunks = await retrieve_chunks(embedding, search_queries, content_type_filter)
         reranked = await rerank_chunks(question, chunks, search_queries)
         chunks = reranked.chunks
         if reranked.clarification:
