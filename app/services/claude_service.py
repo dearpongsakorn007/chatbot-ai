@@ -354,7 +354,7 @@ def _select_safe_fallback(
     if support < _SAFE_FALLBACK_MIN_SUPPORT:
         if allow_top_ranked:
             top_chunk = chunks[0]
-            if top_chunk.content.strip() and float(top_chunk.score or 0) > 0:
+            if top_chunk.content.strip():
                 return top_chunk.model_copy(update={"verified_evidence": None})
         return None
     return chunk.model_copy(update={"verified_evidence": None})
