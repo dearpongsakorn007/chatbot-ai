@@ -37,6 +37,18 @@ def test_parse_search_queries_rejects_empty_and_long_lines():
     assert _parse_search_queries("\n" + ("x" * 121)) == []
 
 
+def test_parse_search_queries_rejects_model_only_generic_queries():
+    assert _parse_search_queries(
+        "SK200-8 DIS 3\nSK200-8 diagnostic\nSK200-8 service manual"
+    ) == []
+
+
+def test_parse_search_queries_keeps_exact_error_code_and_useful_terms():
+    assert _parse_search_queries(
+        "P0217\npump pressure\nslow hydraulic operation"
+    ) == ["P0217", "pump pressure", "slow hydraulic operation"]
+
+
 def test_ambiguous_injector_wording_requests_clarification():
     question = "SK200-8 หัวฉีดน้ำมันดันออกหลุดออกมาเกิดจากอะไร"
     clarification = get_ambiguity_clarification(question)

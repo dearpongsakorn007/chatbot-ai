@@ -36,6 +36,12 @@ Return exactly 3 alternative English search queries, one per line.
 - Each line must contain only 1-5 concise technical terms likely to appear verbatim in a manual.
 - Translate the user's meaning; do not answer the question.
 - Preserve model numbers, error codes, units, and part numbers when they help identify the topic.
+- This corpus is already limited to the selected machine model. Never return the model name
+  plus only generic words such as manual, service, diagnostic, repair, or maintenance.
+- A label such as "DIS 3", "display 3", or a screen/channel number is not an error code.
+  Search the component, measured property, operating symptom, and test condition shown there.
+- Every line must still contain a useful component, property, symptom, action, value, or exact
+  identifier after the machine model is removed.
 - Do not add numbering, bullets, labels, quotes, or explanations.
 """.strip()
 
@@ -65,6 +71,13 @@ Rules:
 - A corrective action is direct evidence only when the candidate explicitly associates
   it with the matching confirmed condition. A list of checks is not proof that the first
   listed part has failed.
+- For a compound customer question, a candidate may directly answer one explicit part of
+  the question (for example the reported measurement and its diagnostic procedure) even
+  when it does not prove the downstream symptom. Select it and let the answer stay within
+  that supported scope; do not return "none" merely because one page cannot prove every clause.
+- When the customer reports an abnormal value, a page for the same component/property that
+  provides its test condition, expected range, or ordered checks is direct evidence. It does
+  not need to repeat the customer's exact numeric value or operational symptom.
 - Every selection must include one short, contiguous, verbatim quote copied from that
   candidate which directly proves its relevance. Never paraphrase the evidence.
 - Confidence must reflect direct support, not topical similarity.
@@ -231,7 +244,7 @@ def _parse_search_queries(raw: str) -> list[str]:
         query = re.sub(r"^\s*(?:[-•*]|\d+[.)])\s*", "", line)
         query = query.strip().strip('"\'`')
         query = " ".join(query.split())
-        if not query or len(query) > 120:
+        if not query or len(query) > 120 or _is_low_information_search_query(query):
             continue
         normalized = query.casefold()
         if normalized not in {item.casefold() for item in queries}:
@@ -239,6 +252,31 @@ def _parse_search_queries(raw: str) -> list[str]:
         if len(queries) == 3:
             break
     return queries
+
+
+_GENERIC_SEARCH_TERMS = {
+    "diagnostic", "diagnosis", "display", "dis", "manual", "service", "repair",
+    "maintenance", "procedure", "system", "machine", "excavator", "kobelco",
+}
+
+
+def _is_low_information_search_query(query: str) -> bool:
+    """Reject model-only/manual queries which overwhelm full-text rank fusion."""
+    normalized = query.casefold()
+    if _ERROR_CODE_PATTERN.search(query):
+        return False
+    normalized = re.sub(r"\b(?:kobelco\s*)?sk\s*[- ]?\d{2,4}(?:-\d+)?\b", " ", normalized)
+    tokens = re.findall(r"[a-z0-9][a-z0-9_-]*", normalized)
+    useful_tokens = []
+    for token in tokens:
+        plain = token.strip("_-")
+        if not plain or plain.isdigit() or plain in _GENERIC_SEARCH_TERMS:
+            continue
+        has_letter = any(char.isalpha() for char in plain)
+        has_digit = any(char.isdigit() for char in plain)
+        if (has_letter and len(plain) >= 3) or (has_letter and has_digit and len(plain) >= 4):
+            useful_tokens.append(plain)
+    return not useful_tokens
 
 
 def _normalize_evidence(text: str) -> str:
