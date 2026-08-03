@@ -30,6 +30,22 @@ Return exactly 3 alternative English search queries, one per line.
 - Do not add numbering, bullets, labels, quotes, or explanations.
 """.strip()
 
+RERANK_PROMPT = """
+You are a strict evidence reranker for a heavy-equipment service manual.
+Select at most 2 candidates that directly answer the customer's exact component,
+symptom, measurement, model, or error code.
+
+Rules:
+- Candidate 1 must contain the strongest direct evidence needed to answer.
+- Select candidate 2 only when it supports the same component and problem.
+- Reject generic pages, nearby topics, and pages about a different system or component.
+- Matching only the machine model or a broad word such as pump is not enough.
+- Prefer explicit diagnostic steps, standard values, causes, and corrective actions.
+- If no candidate directly supports the question, return NONE.
+- Otherwise return only candidate numbers separated by commas, such as: 2 or 2,5
+- Do not explain your choice.
+""".strip()
+
 SYSTEM_PROMPT = """
 คุณเป็นผู้ช่วยตอบคำถามเกี่ยวกับการซ่อมและการใช้งานเครื่องจักร
 
@@ -37,15 +53,16 @@ SYSTEM_PROMPT = """
 1. ตอบโดยใช้เฉพาะข้อมูลอ้างอิงจากฐานข้อมูลที่ส่งให้เท่านั้น ห้ามเดาหรือเติมข้อมูลเอง
 2. ตอบเป็นภาษาไทยที่เป็นธรรมชาติ ใช้คำง่าย และเรียบเรียงให้อ่านเข้าใจได้ทันที
 3. ตอบสั้น กระชับ และตรงคำถาม ไม่เกริ่นนำและไม่ทวนคำถาม
-4. คำตอบทั้งหมดต้องไม่เกิน 350 ตัวอักษร ใช้เท่าที่จำเป็นและไม่เกิน 2 ข้อ แต่ละข้อมีเพียง 1 ประโยคสั้น ๆ
-5. ระบุสาเหตุ วิธีตรวจสอบ และวิธีแก้เฉพาะส่วนที่มีอยู่ในข้อมูลอ้างอิง
-6. ห้ามกล่าวอ้างว่ามีข้อมูล รูป หรือขั้นตอนใด หากไม่ได้อยู่ในข้อมูลอ้างอิง
-7. หากข้อมูลไม่เพียงพอ ให้ตอบว่า "ไม่พบข้อมูลเพียงพอในฐานข้อมูล กรุณาระบุรุ่นเครื่องหรือ Error Code เพิ่มเติม"
-8. ไม่ต้องอธิบายกระบวนการค้นหา ไม่ต้องใช้คำว่า chunk, embedding หรือโมเดลภาษา
-9. ห้ามเขียนเลขหน้า แหล่งข้อมูล ข้อความในวงเล็บเหลี่ยม ข้อความอ้างอิงรูป หรือคำเตือนท้ายคำตอบ เพราะระบบจะเพิ่มให้เอง
-10. หากคำถามระบุชื่อชิ้นส่วนไม่ชัด แต่ข้อมูลอ้างอิงเป็นชิ้นส่วนชนิดเฉพาะ ให้ระบุชื่อชิ้นส่วนนั้นสั้น ๆ ก่อนบอกค่า ห้ามเหมารวมว่าเป็นค่าของทุกชิ้นส่วน
-11. ให้ยึดข้อมูลหลักอันดับ 1 เป็นคำตอบหลัก ใช้ข้อมูลอันดับอื่นเฉพาะเมื่อสนับสนุนเรื่องเดียวกัน ห้ามนำข้อมูลคนละระบบหรือคนละอาการมารวมกัน
-12. เมื่อกล่าวถึงสาเหตุ ให้ขึ้นต้นด้วย "สาเหตุ:" และบอกข้อมูลโดยตรง ห้ามใช้คำว่า "อาจ" หรือ "อาจจะ"
+4. คำตอบทั้งหมดต้องไม่เกิน 350 ตัวอักษร เขียนแต่ละหัวข้อคนละบรรทัดและไม่ใช้หัวข้อย่อยซ้อนกัน แต่ละหัวข้อต้องไม่เกิน 1 ประโยคสั้น
+5. ใช้เฉพาะหัวข้อที่มีข้อมูลจริง ได้แก่ "สาเหตุ:", "ตรวจสอบ:", "ค่ามาตรฐาน:" และ "วิธีแก้:" หากไม่มีข้อมูลหัวข้อใดให้ตัดหัวข้อนั้นออก
+6. หากข้อมูลมีหลายสาเหตุหรือหลายขั้นตอน ให้เลือกเฉพาะรายการที่ตรงคำถามและควรทำก่อนที่สุด ห้ามรวบรวมทุกความเป็นไปได้
+7. ห้ามกล่าวอ้างว่ามีข้อมูล รูป หรือขั้นตอนใด หากไม่ได้อยู่ในข้อมูลอ้างอิง
+8. หากข้อมูลไม่เพียงพอ ให้ตอบว่า "ไม่พบข้อมูลเพียงพอในฐานข้อมูล กรุณาระบุรุ่นเครื่องหรือ Error Code เพิ่มเติม"
+9. ไม่ต้องอธิบายกระบวนการค้นหา ไม่ต้องใช้คำว่า chunk, embedding หรือโมเดลภาษา
+10. ห้ามเขียนเลขหน้า แหล่งข้อมูล ข้อความในวงเล็บเหลี่ยม ข้อความอ้างอิงรูป หรือคำเตือนท้ายคำตอบ เพราะระบบจะเพิ่มให้เอง
+11. หากคำถามระบุชื่อชิ้นส่วนไม่ชัด แต่ข้อมูลอ้างอิงเป็นชิ้นส่วนชนิดเฉพาะ ให้ระบุชื่อชิ้นส่วนนั้นสั้น ๆ ก่อนบอกค่า ห้ามเหมารวมว่าเป็นค่าของทุกชิ้นส่วน
+12. ให้ยึดข้อมูลหลักอันดับ 1 เป็นคำตอบหลัก ใช้ข้อมูลอันดับอื่นเฉพาะเมื่อสนับสนุนเรื่องเดียวกัน ห้ามนำข้อมูลคนละระบบหรือคนละอาการมารวมกัน
+13. เมื่อกล่าวถึงสาเหตุ ให้ขึ้นต้นด้วย "สาเหตุ:" และบอกข้อมูลโดยตรง ห้ามใช้คำว่า "อาจ" หรือ "อาจจะ"
 """.strip()
 
 _anthropic_client = AsyncAnthropic(api_key=settings.anthropic_api_key)
@@ -81,6 +98,34 @@ def _parse_search_queries(raw: str) -> list[str]:
         if len(queries) == 3:
             break
     return queries
+
+
+def _parse_rerank_indices(raw: str, candidate_count: int) -> list[int]:
+    if "NONE" in raw.upper():
+        return []
+    indices: list[int] = []
+    for value in re.findall(r"\d+", raw):
+        index = int(value) - 1
+        if 0 <= index < candidate_count and index not in indices:
+            indices.append(index)
+        if len(indices) == 2:
+            break
+    return indices
+
+
+def _build_rerank_content(
+    question: str,
+    chunks: list[RetrievedChunk],
+) -> str:
+    candidates = []
+    for index, chunk in enumerate(chunks, start=1):
+        content = " ".join(chunk.content.split())[:5000]
+        candidates.append(
+            f"CANDIDATE {index}\n"
+            f"Page: {chunk.reference or 'unknown'}\n"
+            f"Content: {content}"
+        )
+    return f"Customer question: {question}\n\n" + "\n\n---\n\n".join(candidates)
 
 
 async def rewrite_search_queries(question: str) -> list[str]:
@@ -122,6 +167,44 @@ async def rewrite_search_queries(question: str) -> list[str]:
         return []
 
 
+async def rerank_chunks(
+    question: str,
+    chunks: list[RetrievedChunk],
+) -> list[RetrievedChunk]:
+    """Use the LLM only as a strict relevance judge before answer generation."""
+    if len(chunks) <= 1:
+        return chunks
+
+    user_content = _build_rerank_content(question, chunks)
+    try:
+        if settings.llm_provider == "claude":
+            resp = await _anthropic_client.messages.create(
+                model=settings.claude_model,
+                max_tokens=80,
+                temperature=0,
+                system=RERANK_PROMPT,
+                messages=[{"role": "user", "content": user_content}],
+            )
+            raw = resp.content[0].text
+        else:
+            resp = await _groq_client.chat.completions.create(
+                model=settings.groq_model,
+                max_completion_tokens=min(settings.llm_max_tokens, 500),
+                temperature=0,
+                extra_body={"reasoning_effort": "low"},
+                messages=[
+                    {"role": "system", "content": RERANK_PROMPT},
+                    {"role": "user", "content": user_content},
+                ],
+            )
+            raw = resp.choices[0].message.content or ""
+        indices = _parse_rerank_indices(raw, len(chunks))
+        return [chunks[index] for index in indices]
+    except Exception:
+        # Keep the deterministic retrieval order if the reranker is unavailable.
+        return chunks[:2]
+
+
 def _build_context(chunks: list[RetrievedChunk]) -> str:
     sections = []
     for index, chunk in enumerate(chunks):
@@ -150,7 +233,58 @@ def _clean_answer(answer: str) -> str:
     )
     answer = re.sub(r"อาจ(?:จะ)?", "", answer)
     answer = re.sub(r"สาเหตุ\s*:\s*", "สาเหตุ: ", answer)
-    return answer.strip()
+    answer = re.sub(r"(?<=\S)\s+สาเหตุ:\s*", " ", answer)
+
+    compact_lines = []
+    for raw_line in answer.splitlines():
+        line = " ".join(raw_line.strip().lstrip("-•* ").split())
+        if not line:
+            continue
+
+        # Keep only the first actionable item when the model returns a list.
+        line = re.split(r"\s+2[.)]\s*", line, maxsplit=1)[0]
+        line = re.sub(r"(?<=:)\s*1[.)]\s*", " ", line)
+        if line.startswith(("ตรวจสอบ:", "วิธีแก้:")):
+            line = re.split(
+                r"\s+และ(?:ตรวจ|เช็ก|เช็ค|วัด|ปรับ|เปลี่ยน|ซ่อม)",
+                line,
+                maxsplit=1,
+            )[0]
+        if len(line) > 140:
+            cut_at = max(
+                line.rfind(".", 0, 141),
+                line.rfind(";", 0, 141),
+                line.rfind(",", 0, 141),
+            )
+            if cut_at >= 70:
+                line = line[: cut_at + 1]
+            else:
+                boundaries = [
+                    line.find(separator, 60, 141)
+                    for separator in (" และ", " หรือ", " ซึ่ง", " โดย", " ทำให้")
+                ]
+                boundaries = [position for position in boundaries if position >= 60]
+                if boundaries:
+                    line = line[: min(boundaries)].rstrip(" ,;:-")
+                else:
+                    cut_at = line.rfind(" ", 0, 138)
+                    if cut_at < 70:
+                        cut_at = 137
+                    line = line[:cut_at].rstrip(" ,;:-") + "."
+        compact_lines.append(line)
+        if len(compact_lines) == 4:
+            break
+
+    selected_lines = []
+    current_length = 0
+    for line in compact_lines:
+        added_length = len(line) + (1 if selected_lines else 0)
+        if selected_lines and current_length + added_length > 350:
+            break
+        selected_lines.append(line)
+        current_length += added_length
+    compact = "\n".join(selected_lines)
+    return compact.strip()
 
 
 async def ask_llm(question: str, chunks: list[RetrievedChunk]) -> str:

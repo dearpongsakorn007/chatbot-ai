@@ -69,3 +69,17 @@ def test_prepare_reply_locks_the_first_ranked_image_reference():
     assert images == [
         ("https://example.com/primary.jpg", "https://example.com/primary.jpg")
     ]
+
+
+def test_prepare_reply_does_not_borrow_image_from_secondary_result():
+    chunks = [
+        RetrievedChunk(content="primary", reference="21-33"),
+        RetrievedChunk(
+            content="secondary",
+            reference="22-3",
+            image_url="https://example.com/secondary.jpg",
+        ),
+    ]
+    text, images = _prepare_reply("คำตอบ", chunks)
+    assert "รูปอ้างอิง" not in text
+    assert images == []

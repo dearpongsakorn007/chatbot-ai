@@ -3,6 +3,7 @@ from app.services.claude_service import (
     _clean_answer,
     _question_cache_key,
     _search_query_cache,
+    _parse_rerank_indices,
     _parse_search_queries,
 )
 from app.services.retrieval_service import _rank_results
@@ -30,6 +31,14 @@ def test_parse_search_queries_rejects_empty_and_long_lines():
     assert _parse_search_queries("\n" + ("x" * 121)) == []
 
 
+def test_parse_rerank_indices_limits_and_deduplicates_results():
+    assert _parse_rerank_indices("2, 2, 5, 1", 5) == [1, 4]
+
+
+def test_parse_rerank_indices_accepts_no_direct_evidence():
+    assert _parse_rerank_indices("NONE", 5) == []
+
+
 def test_clean_answer_removes_model_generated_source_labels():
     answer = (
         "ค่ามาตรฐาน 27.5 Ω [แหล่ง 17-43]\n"
@@ -41,6 +50,20 @@ def test_clean_answer_removes_model_generated_source_labels():
 def test_clean_answer_replaces_uncertain_cause_wording():
     answer = "สาเหตุอาจมาจากแรงดันปั๊มต่ำ ซึ่งอาจจะทำให้เครื่องช้า"
     assert _clean_answer(answer) == "สาเหตุ: แรงดันปั๊มต่ำ ซึ่งทำให้เครื่องช้า"
+
+
+def test_clean_answer_collapses_duplicate_causes_and_enforces_length():
+    answer = (
+        "สาเหตุ: แรงดันปั๊มต่ำ สาเหตุ: วาล์วผิดปกติ\n"
+        "ตรวจสอบ: ตรวจแรงดันปั๊ม และตรวจฟิลเตอร์\n"
+        "วิธีแก้: 1) ปรับแรงดันปั๊ม 2) เปลี่ยนวาล์ว"
+    )
+    cleaned = _clean_answer(answer)
+    assert cleaned.count("สาเหตุ:") == 1
+    assert len(cleaned) <= 350
+    assert "ตรวจฟิลเตอร์" not in cleaned
+    assert "เปลี่ยนวาล์ว" not in cleaned
+    assert "…" not in cleaned
 
 
 def test_question_cache_normalizes_case_and_whitespace():

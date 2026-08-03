@@ -9,7 +9,7 @@ from app.config import settings
 from app.models.schemas import LineWebhookPayload, RetrievedChunk
 from app.services.embedding_service import get_embedding
 from app.services.retrieval_service import retrieve_chunks
-from app.services.claude_service import ask_llm, rewrite_search_queries
+from app.services.claude_service import ask_llm, rerank_chunks, rewrite_search_queries
 from app.services.line_service import reply_message
 from app.utils.logger import log_conversation, logger
 
@@ -89,9 +89,8 @@ def _prepare_reply(
 ) -> tuple[str, list[tuple[str, str]]]:
     parts = [ANSWER_GREETING, answer.strip()]
     images: list[tuple[str, str]] = []
-    # Retrieval is deterministically ranked; the first eligible result is the
-    # single locked reference for both the page label and image.
-    reference_chunk = next((chunk for chunk in chunks if chunk.image_url), None)
+    # The reranker's first result is the only permitted page/image reference.
+    reference_chunk = chunks[0] if chunks and chunks[0].image_url else None
 
     if reference_chunk and reference_chunk.image_url:
         images.append(
@@ -121,7 +120,11 @@ async def _handle_message(reply_token: str, user_id: str, question: str) -> None
             embedding_text += f"\nTechnical manual terms: {search_queries[0]}"
         embedding = await get_embedding(embedding_text)
         chunks = await retrieve_chunks(embedding, search_queries)
-        answer = await ask_llm(question, chunks)
+        chunks = await rerank_chunks(question, chunks)
+        if chunks:
+            answer = await ask_llm(question, chunks)
+        else:
+            answer = "ไม่พบข้อมูลที่ตรงกับคำถาม กรุณาระบุชิ้นส่วน อาการ หรือค่าที่วัดเพิ่มเติม"
         answer, images = _prepare_reply(answer, chunks)
         await reply_message(reply_token, answer, images)
         log_conversation(user_id, question, answer)
