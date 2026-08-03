@@ -4,6 +4,7 @@
 โดยไม่ต้องแก้โค้ดส่วนอื่น (webhook, retrieval เหมือนเดิมทุกอย่าง)
 """
 import re
+from collections import OrderedDict
 
 from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI  # groq ใช้ openai-compatible client
@@ -43,10 +44,26 @@ SYSTEM_PROMPT = """
 8. ไม่ต้องอธิบายกระบวนการค้นหา ไม่ต้องใช้คำว่า chunk, embedding หรือโมเดลภาษา
 9. ห้ามเขียนเลขหน้า แหล่งข้อมูล ข้อความในวงเล็บเหลี่ยม ข้อความอ้างอิงรูป หรือคำเตือนท้ายคำตอบ เพราะระบบจะเพิ่มให้เอง
 10. หากคำถามระบุชื่อชิ้นส่วนไม่ชัด แต่ข้อมูลอ้างอิงเป็นชิ้นส่วนชนิดเฉพาะ ให้ระบุชื่อชิ้นส่วนนั้นสั้น ๆ ก่อนบอกค่า ห้ามเหมารวมว่าเป็นค่าของทุกชิ้นส่วน
+11. ให้ยึดข้อมูลหลักอันดับ 1 เป็นคำตอบหลัก ใช้ข้อมูลอันดับอื่นเฉพาะเมื่อสนับสนุนเรื่องเดียวกัน ห้ามนำข้อมูลคนละระบบหรือคนละอาการมารวมกัน
 """.strip()
 
 _anthropic_client = AsyncAnthropic(api_key=settings.anthropic_api_key)
 _groq_client = AsyncOpenAI(api_key=settings.groq_api_key, base_url="https://api.groq.com/openai/v1")
+_SEARCH_QUERY_CACHE_MAX = 512
+_search_query_cache: OrderedDict[str, tuple[str, ...]] = OrderedDict()
+
+
+def _question_cache_key(question: str) -> str:
+    return " ".join(question.casefold().split())
+
+
+def _cache_search_queries(key: str, queries: list[str]) -> None:
+    if not queries:
+        return
+    _search_query_cache[key] = tuple(queries)
+    _search_query_cache.move_to_end(key)
+    while len(_search_query_cache) > _SEARCH_QUERY_CACHE_MAX:
+        _search_query_cache.popitem(last=False)
 
 
 def _parse_search_queries(raw: str) -> list[str]:
@@ -67,15 +84,24 @@ def _parse_search_queries(raw: str) -> list[str]:
 
 async def rewrite_search_queries(question: str) -> list[str]:
     """Translate any user phrasing into technical manual search terms."""
+    cache_key = _question_cache_key(question)
+    cached = _search_query_cache.get(cache_key)
+    if cached is not None:
+        _search_query_cache.move_to_end(cache_key)
+        return list(cached)
+
     try:
         if settings.llm_provider == "claude":
             resp = await _anthropic_client.messages.create(
                 model=settings.claude_model,
                 max_tokens=180,
+                temperature=0,
                 system=SEARCH_QUERY_PROMPT,
                 messages=[{"role": "user", "content": question}],
             )
-            return _parse_search_queries(resp.content[0].text)
+            queries = _parse_search_queries(resp.content[0].text)
+            _cache_search_queries(cache_key, queries)
+            return queries
 
         resp = await _groq_client.chat.completions.create(
             model=settings.groq_model,
@@ -87,19 +113,31 @@ async def rewrite_search_queries(question: str) -> list[str]:
                 {"role": "user", "content": question},
             ],
         )
-        return _parse_search_queries(resp.choices[0].message.content or "")
+        queries = _parse_search_queries(resp.choices[0].message.content or "")
+        _cache_search_queries(cache_key, queries)
+        return queries
     except Exception:
         # Vector search using the original question remains available if rewriting fails.
         return []
 
 
 def _build_context(chunks: list[RetrievedChunk]) -> str:
-    return "\n\n---\n\n".join(c.content for c in chunks)
+    sections = []
+    for index, chunk in enumerate(chunks):
+        priority = "ข้อมูลหลักอันดับ 1" if index == 0 else f"ข้อมูลสนับสนุนอันดับ {index + 1}"
+        sections.append(f"[{priority}]\n{chunk.content}")
+    return "\n\n---\n\n".join(sections)
 
 
 def _clean_answer(answer: str) -> str:
     answer = re.sub(
         r"\s*\[(?:แหล่ง|อ้างอิง|source|หน้า)[^\]]*\]",
+        "",
+        answer,
+        flags=re.IGNORECASE,
+    )
+    answer = re.sub(
+        r"\s*\((?:แหล่ง|อ้างอิง|source)[^)]*\)",
         "",
         answer,
         flags=re.IGNORECASE,
@@ -115,6 +153,7 @@ async def ask_llm(question: str, chunks: list[RetrievedChunk]) -> str:
         resp = await _anthropic_client.messages.create(
             model=settings.claude_model,
             max_tokens=settings.llm_max_tokens,
+            temperature=0,
             system=SYSTEM_PROMPT,
             messages=[{"role": "user", "content": user_content}],
         )
@@ -128,6 +167,7 @@ async def ask_llm(question: str, chunks: list[RetrievedChunk]) -> str:
     resp = await _groq_client.chat.completions.create(
         model=settings.groq_model,
         max_completion_tokens=settings.llm_max_tokens,
+        temperature=0,
         extra_body={"reasoning_effort": "low"},
         messages=messages,
     )
@@ -138,6 +178,7 @@ async def ask_llm(question: str, chunks: list[RetrievedChunk]) -> str:
     retry = await _groq_client.chat.completions.create(
         model=settings.groq_model,
         max_completion_tokens=settings.llm_max_tokens,
+        temperature=0,
         extra_body={"reasoning_effort": "low"},
         messages=messages,
     )

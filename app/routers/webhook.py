@@ -88,6 +88,8 @@ def _prepare_reply(
 ) -> tuple[str, list[tuple[str, str]]]:
     parts = [answer.strip()]
     images: list[tuple[str, str]] = []
+    # Retrieval is deterministically ranked; the first eligible result is the
+    # single locked reference for both the page label and image.
     reference_chunk = next((chunk for chunk in chunks if chunk.image_url), None)
 
     if reference_chunk and reference_chunk.image_url:

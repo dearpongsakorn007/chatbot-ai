@@ -4,7 +4,8 @@
 """
 from fastapi.testclient import TestClient
 from app.main import app
-from app.routers.webhook import _is_conversation_opener, _opening_response
+from app.models.schemas import RetrievedChunk
+from app.routers.webhook import _is_conversation_opener, _opening_response, _prepare_reply
 
 client = TestClient(app)
 
@@ -46,3 +47,24 @@ def test_opening_response_is_a_broad_question():
     response = _opening_response("สวัสดีครับ")
     assert "?" in response
     assert any(word in response for word in ("รุ่นเครื่อง", "อาการ", "วิธีใช้งาน"))
+
+
+def test_prepare_reply_locks_the_first_ranked_image_reference():
+    chunks = [
+        RetrievedChunk(
+            content="primary",
+            reference="21-33",
+            image_url="https://example.com/primary.jpg",
+        ),
+        RetrievedChunk(
+            content="secondary",
+            reference="22-3",
+            image_url="https://example.com/secondary.jpg",
+        ),
+    ]
+    text, images = _prepare_reply("คำตอบ", chunks)
+    assert "หน้า 21-33" in text
+    assert "22-3" not in text
+    assert images == [
+        ("https://example.com/primary.jpg", "https://example.com/primary.jpg")
+    ]

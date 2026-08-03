@@ -9,6 +9,61 @@ from app.config import settings
 from app.models.schemas import RetrievedChunk
 
 logger = logging.getLogger("repair-bot")
+RRF_K = 60
+FULLTEXT_WEIGHTS = (3.0, 1.5, 1.0)
+VECTOR_WEIGHT = 2.0
+
+
+def _row_key(row: dict) -> str:
+    row_id = row.get("id")
+    if row_id is not None:
+        return f"id:{row_id}"
+    metadata = row.get("metadata") or {}
+    return "|".join(
+        (
+            str(metadata.get("source_file") or row.get("source") or ""),
+            str(metadata.get("page_reference") or metadata.get("pdf_page_start") or ""),
+            str(row.get("content") or ""),
+        )
+    )
+
+
+def _result_score(row: dict) -> float:
+    value = row.get("search_score")
+    if value is None:
+        value = row.get("similarity")
+    try:
+        return float(value or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _stable_group(rows: list[dict]) -> list[dict]:
+    return sorted(rows, key=lambda row: (-_result_score(row), _row_key(row)))
+
+
+def _rank_results(
+    result_groups: list[tuple[float, list[dict]]],
+    limit: int,
+) -> list[dict]:
+    """Deterministic weighted reciprocal-rank fusion for hybrid retrieval."""
+    fused_scores: dict[str, float] = {}
+    rows_by_key: dict[str, dict] = {}
+
+    for weight, rows in result_groups:
+        for rank, row in enumerate(_stable_group(rows), start=1):
+            key = _row_key(row)
+            rows_by_key.setdefault(key, row)
+            fused_scores[key] = fused_scores.get(key, 0.0) + weight / (RRF_K + rank)
+
+    ranked_keys = sorted(fused_scores, key=lambda key: (-fused_scores[key], key))
+    ranked_rows = []
+    for key in ranked_keys[:limit]:
+        row = dict(rows_by_key[key])
+        row["fusion_score"] = fused_scores[key]
+        ranked_rows.append(row)
+    return ranked_rows
+
 
 def _find_reference_images(supabase, rows: list[dict]) -> dict[tuple[str, str], dict]:
     pages_by_source: dict[str, set[int | str]] = {}
@@ -68,8 +123,8 @@ async def retrieve_chunks(
         },
     ).execute()
 
-    result_groups: list[list[dict]] = []
-    for fulltext_query in (search_queries or [])[:3]:
+    result_groups: list[tuple[float, list[dict]]] = []
+    for query_index, fulltext_query in enumerate((search_queries or [])[:3]):
         try:
             fulltext_result = supabase.rpc(
                 "search_sk2008_fulltext",
@@ -78,30 +133,14 @@ async def retrieve_chunks(
                     "result_limit": candidate_count,
                 },
             ).execute()
-            result_groups.append(fulltext_result.data or [])
+            result_groups.append(
+                (FULLTEXT_WEIGHTS[query_index], fulltext_result.data or [])
+            )
         except Exception as exc:
             logger.warning("full-text search failed: %s", exc)
 
-    # Interleave exact, alternative, and semantic results so one broad query cannot
-    # consume every context slot before the other retrieval strategies are considered.
-    result_groups.append(vector_result.data or [])
-    rows: list[dict] = []
-    for rank in range(candidate_count):
-        for group in result_groups:
-            if rank < len(group):
-                rows.append(group[rank])
-
-    unique_rows = []
-    seen_ids = set()
-    for row in rows:
-        row_id = row.get("id")
-        if row_id in seen_ids:
-            continue
-        seen_ids.add(row_id)
-        unique_rows.append(row)
-        if len(unique_rows) >= settings.top_k:
-            break
-    rows = unique_rows
+    result_groups.append((VECTOR_WEIGHT, vector_result.data or []))
+    rows = _rank_results(result_groups, settings.top_k)
     reference_images = _find_reference_images(supabase, rows)
     chunks = []
     for row in rows:
@@ -122,7 +161,11 @@ async def retrieve_chunks(
                     or metadata.get("source_file")
                     or metadata.get("source")
                 ),
-                score=row.get("similarity") or row.get("search_score"),
+                score=(
+                    row.get("fusion_score")
+                    or row.get("similarity")
+                    or row.get("search_score")
+                ),
                 reference=str(reference) if reference is not None else None,
                 image_url=metadata.get("image_url") or image.get("image_url"),
                 preview_image_url=(
