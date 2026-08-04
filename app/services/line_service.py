@@ -3,8 +3,8 @@ from app.config import settings
 
 LINE_REPLY_URL = "https://api.line.me/v2/bot/message/reply"
 LINE_PUSH_URL = "https://api.line.me/v2/bot/message/push"
-# LINE จำกัด bubble ต่อ carousel 1 อันไว้ที่ 10
-MAX_CAROUSEL_IMAGES = 10
+# LINE จำกัดจำนวนข้อความต่อการ reply/push ไว้ที่ 5 ข้อความ กันที่ไว้ 1 สำหรับข้อความคำตอบ
+MAX_REPLY_IMAGES = 4
 
 
 def _valid_image_pairs(
@@ -19,48 +19,23 @@ def _valid_image_pairs(
             continue
         seen.add(original_url)
         valid.append((original_url, preview_url))
-        if len(valid) == MAX_CAROUSEL_IMAGES:
+        if len(valid) == MAX_REPLY_IMAGES:
             break
     return valid
-
-
-def _build_image_carousel(images: list[tuple[str, str]]) -> dict:
-    """รูปอ้างอิงหลายหน้า (chunk เดียวครอบคลุมหลายหน้า) ให้อยู่ในกรอบเดียวกัน
-    เป็น carousel เดียว ปัด/แตะเพื่อดูรูปถัดไป แทนที่จะส่งเป็นรูปแยกเรียงยาวในแชท
-
-    รูปใน hero component ของ Flex Message ไม่มีตัวขยายเต็มจอในตัวแบบ image message ปกติ
-    (แตะแล้วไม่มีอะไรเกิดขึ้น) ต้องผูก action แบบ uri ชี้ไปยังรูปต้นฉบับเอง ให้แตะแล้วเปิดดูเต็มได้
-    """
-    bubbles = [
-        {
-            "type": "bubble",
-            "hero": {
-                "type": "image",
-                "url": original_url,
-                "size": "full",
-                "aspectRatio": "3:4",
-                "aspectMode": "cover",
-                "action": {"type": "uri", "uri": original_url},
-            },
-        }
-        for original_url, _ in images
-    ]
-    return {
-        "type": "flex",
-        "altText": f"รูปอ้างอิง {len(bubbles)} หน้า",
-        "contents": {"type": "carousel", "contents": bubbles},
-    }
 
 
 def _build_messages(
     text: str,
     images: list[tuple[str, str]] | None = None,
 ) -> list[dict]:
-    messages: list[dict] = [{"type": "text", "text": text}]
-    valid_images = _valid_image_pairs(images)
+    """ส่งรูปอ้างอิงหลายหน้าเป็น image message แยกทีละรูปตามปกติของ LINE (ไม่ใช้ Flex carousel)
 
-    if len(valid_images) == 1:
-        original_url, preview_url = valid_images[0]
+    เคยลองรวมเป็น Flex Message carousel ให้อยู่ในกรอบเดียวกัน แต่รูปใน Flex hero component
+    แตะแล้วเปิดเป็นลิงก์นอกแอพ ไม่ใช่ตัวดูรูปเต็มจอในตัวของ LINE เหมือน image message ปกติ
+    ส่งเป็น image message แยกแทนจะได้แตะดูเต็มจอ/ปัดดูรูปถัดไปในแอพ LINE ได้เลยเหมือนรูปทั่วไป
+    """
+    messages: list[dict] = [{"type": "text", "text": text}]
+    for original_url, preview_url in _valid_image_pairs(images):
         messages.append(
             {
                 "type": "image",
@@ -68,9 +43,6 @@ def _build_messages(
                 "previewImageUrl": preview_url,
             }
         )
-    elif len(valid_images) > 1:
-        messages.append(_build_image_carousel(valid_images))
-
     return messages
 
 
