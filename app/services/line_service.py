@@ -3,24 +3,60 @@ from app.config import settings
 
 LINE_REPLY_URL = "https://api.line.me/v2/bot/message/reply"
 LINE_PUSH_URL = "https://api.line.me/v2/bot/message/push"
-MAX_REPLY_IMAGES = 1
+# LINE จำกัด bubble ต่อ carousel 1 อันไว้ที่ 10
+MAX_CAROUSEL_IMAGES = 10
 
 
-def _build_messages(
-    text: str,
-    images: list[tuple[str, str]] | None = None,
-) -> list[dict[str, str]]:
-    messages: list[dict[str, str]] = [{"type": "text", "text": text}]
+def _valid_image_pairs(
+    images: list[tuple[str, str]] | None,
+) -> list[tuple[str, str]]:
     seen: set[str] = set()
-
+    valid: list[tuple[str, str]] = []
     for original_url, preview_url in images or []:
-        if len(messages) > MAX_REPLY_IMAGES:
-            break
         if original_url in seen:
             continue
         if not original_url.startswith("https://") or not preview_url.startswith("https://"):
             continue
         seen.add(original_url)
+        valid.append((original_url, preview_url))
+        if len(valid) == MAX_CAROUSEL_IMAGES:
+            break
+    return valid
+
+
+def _build_image_carousel(images: list[tuple[str, str]]) -> dict:
+    """รูปอ้างอิงหลายหน้า (chunk เดียวครอบคลุมหลายหน้า) ให้อยู่ในกรอบเดียวกัน
+    เป็น carousel เดียว ปัด/แตะเพื่อดูรูปถัดไป แทนที่จะส่งเป็นรูปแยกเรียงยาวในแชท
+    """
+    bubbles = [
+        {
+            "type": "bubble",
+            "hero": {
+                "type": "image",
+                "url": original_url,
+                "size": "full",
+                "aspectRatio": "3:4",
+                "aspectMode": "cover",
+            },
+        }
+        for original_url, _ in images
+    ]
+    return {
+        "type": "flex",
+        "altText": f"รูปอ้างอิง {len(bubbles)} หน้า",
+        "contents": {"type": "carousel", "contents": bubbles},
+    }
+
+
+def _build_messages(
+    text: str,
+    images: list[tuple[str, str]] | None = None,
+) -> list[dict]:
+    messages: list[dict] = [{"type": "text", "text": text}]
+    valid_images = _valid_image_pairs(images)
+
+    if len(valid_images) == 1:
+        original_url, preview_url = valid_images[0]
         messages.append(
             {
                 "type": "image",
@@ -28,6 +64,8 @@ def _build_messages(
                 "previewImageUrl": preview_url,
             }
         )
+    elif len(valid_images) > 1:
+        messages.append(_build_image_carousel(valid_images))
 
     return messages
 

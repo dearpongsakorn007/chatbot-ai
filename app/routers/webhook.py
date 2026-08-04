@@ -130,12 +130,14 @@ def _prepare_reply(
     reference_chunk = chunks[0] if chunks and chunks[0].image_url else None
 
     if reference_chunk and reference_chunk.image_url:
-        images.append(
-            (
-                reference_chunk.image_url,
-                reference_chunk.preview_image_url or reference_chunk.image_url,
-            )
-        )
+        # chunk เดียวอาจครอบคลุมหลายหน้า (page_image_urls) แนบรูปทุกหน้าที่คำตอบอ้างอิงถึงจริง
+        # ไม่ใช่แค่หน้าแรก ไม่งั้นช่างจะพลาดไดอะแกรม/ตารางที่อยู่หน้าอื่นในเนื้อหาเดียวกัน
+        page_images = reference_chunk.page_image_urls or [reference_chunk.image_url]
+        for url in page_images:
+            if url == reference_chunk.image_url:
+                images.append((url, reference_chunk.preview_image_url or url))
+            else:
+                images.append((url, url))
         reference = reference_chunk.reference or "ไม่ระบุหน้า"
         parts.append(f"รูปอ้างอิง: หน้า {reference}")
 

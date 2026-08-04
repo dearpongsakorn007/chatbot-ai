@@ -3,6 +3,7 @@
 ใช้ function/RPC ชื่อ match_documents ซึ่งรองรับ embeddings ชุดปัจจุบัน
 """
 import logging
+import re
 
 from app.db.supabase_client import get_supabase
 from app.config import settings
@@ -182,6 +183,28 @@ def _find_reference_images(supabase, rows: list[dict]) -> dict[tuple[str, str], 
     return images_by_page
 
 
+_PAGE_IMAGE_PATTERN = re.compile(r"^(.*_p)(\d+)(\.[a-zA-Z]+)$")
+
+
+def _build_page_image_urls(
+    image_url: str | None,
+    source_pdf_pages: list | None,
+) -> list[str] | None:
+    """สร้าง URL รูปของทุกหน้าที่ chunk นี้ครอบคลุมจากรูปแบบชื่อไฟล์เดียวกับ image_url หลัก
+
+    chunk เดียวอาจรวมเนื้อหาจากหลายหน้า PDF (metadata.source_pdf_pages) แต่แถวข้อมูลเก็บ
+    image_url ของหน้าแรกหน้าเดียว รูปของหน้าอื่นๆ มีอยู่แล้วใน storage ตามรูปแบบชื่อเดียวกัน
+    (เช่น sk2008_p1071.jpg, sk2008_p1072.jpg, ...) จึงสร้าง URL ตรงๆ ได้ ไม่ต้อง query เพิ่ม
+    """
+    if not image_url or not source_pdf_pages or len(source_pdf_pages) < 2:
+        return None
+    match = _PAGE_IMAGE_PATTERN.match(image_url)
+    if not match:
+        return None
+    prefix, _, suffix = match.groups()
+    return [f"{prefix}{page}{suffix}" for page in source_pdf_pages]
+
+
 async def retrieve_chunks(
     query_embedding: list[float],
     search_queries: list[str] | None = None,
@@ -250,6 +273,7 @@ async def retrieve_chunks(
             or reference_images.get((source_file, pdf_page, ""))
             or {}
         )
+        chunk_image_url = metadata.get("image_url") or image.get("image_url")
         chunks.append(
             RetrievedChunk(
                 content=row.get("content", ""),
@@ -264,10 +288,13 @@ async def retrieve_chunks(
                     or row.get("search_score")
                 ),
                 reference=str(reference) if reference is not None else None,
-                image_url=metadata.get("image_url") or image.get("image_url"),
+                image_url=chunk_image_url,
                 preview_image_url=(
                     metadata.get("preview_image_url")
                     or image.get("preview_image_url")
+                ),
+                page_image_urls=_build_page_image_urls(
+                    chunk_image_url, metadata.get("source_pdf_pages")
                 ),
             )
         )

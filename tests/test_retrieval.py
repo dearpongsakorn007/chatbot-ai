@@ -20,7 +20,7 @@ from app.services.claude_service import (
     _parse_rerank_result,
     _parse_search_queries,
 )
-from app.services.retrieval_service import _rank_results
+from app.services.retrieval_service import _build_page_image_urls, _rank_results
 
 
 def test_parse_search_queries():
@@ -451,3 +451,24 @@ def test_procedure_filter_keeps_installation_page_for_procedure_question():
 def test_procedure_filter_does_not_empty_out_when_only_installation_pages_exist():
     chunk = RetrievedChunk(content="Subsection: 33.4.8.3 INSTALLATION\nInstalling the pump...")
     assert _filter_procedure_only_pages("ปั๊มไม่มีแรงเกิดจากอะไรครับ", [chunk]) == [chunk]
+
+
+def test_build_page_image_urls_expands_every_page_the_chunk_covers():
+    image_url = "https://x.supabase.co/storage/v1/object/public/manual-pages/sk2008_p1071.jpg"
+    urls = _build_page_image_urls(image_url, [1071, 1072, 1073])
+    assert urls == [
+        "https://x.supabase.co/storage/v1/object/public/manual-pages/sk2008_p1071.jpg",
+        "https://x.supabase.co/storage/v1/object/public/manual-pages/sk2008_p1072.jpg",
+        "https://x.supabase.co/storage/v1/object/public/manual-pages/sk2008_p1073.jpg",
+    ]
+
+
+def test_build_page_image_urls_returns_none_for_single_page_chunk():
+    image_url = "https://x.supabase.co/storage/v1/object/public/manual-pages/sk2008_p416.jpg"
+    assert _build_page_image_urls(image_url, [416]) is None
+    assert _build_page_image_urls(image_url, None) is None
+    assert _build_page_image_urls(None, [416, 417]) is None
+
+
+def test_build_page_image_urls_returns_none_when_filename_pattern_unrecognized():
+    assert _build_page_image_urls("https://x.supabase.co/foo/bar.jpg", [1, 2]) is None

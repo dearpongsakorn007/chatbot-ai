@@ -32,3 +32,6 @@ class RetrievedChunk(BaseModel):
     reference: Optional[str] = None
     image_url: Optional[str] = None
     preview_image_url: Optional[str] = None
+    # ทุกหน้า PDF ที่ chunk นี้ครอบคลุม (chunk เดียวอาจรวมเนื้อหาหลายหน้า แต่ image_url ข้างบน
+    # ชี้แค่หน้าแรกหน้าเดียว) ใช้ตอนแนบรูปอ้างอิงให้ครบทุกหน้าที่คำตอบอ้างอิงถึงจริง
+    page_image_urls: Optional[list[str]] = None

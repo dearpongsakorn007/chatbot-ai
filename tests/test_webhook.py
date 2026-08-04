@@ -94,6 +94,27 @@ def test_prepare_reply_locks_the_first_ranked_image_reference():
     ]
 
 
+def test_prepare_reply_attaches_every_page_image_the_primary_chunk_covers():
+    chunk = RetrievedChunk(
+        content="primary",
+        reference="17-39 to 17-41",
+        image_url="https://example.com/p1071.jpg",
+        preview_image_url="https://example.com/preview1071.jpg",
+        page_image_urls=[
+            "https://example.com/p1071.jpg",
+            "https://example.com/p1072.jpg",
+            "https://example.com/p1073.jpg",
+        ],
+    )
+    text, images = _prepare_reply("คำตอบ", [chunk])
+    assert "รูปอ้างอิง: หน้า 17-39 to 17-41" in text
+    assert images == [
+        ("https://example.com/p1071.jpg", "https://example.com/preview1071.jpg"),
+        ("https://example.com/p1072.jpg", "https://example.com/p1072.jpg"),
+        ("https://example.com/p1073.jpg", "https://example.com/p1073.jpg"),
+    ]
+
+
 def test_prepare_reply_does_not_borrow_image_from_secondary_result():
     chunks = [
         RetrievedChunk(content="primary", reference="21-33"),
