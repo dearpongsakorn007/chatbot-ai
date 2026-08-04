@@ -491,6 +491,33 @@ def test_is_symptom_matrix_table_detects_row_group_marker():
     assert not _is_symptom_matrix_table("Normal prose page about pump pressure checks")
 
 
+_NUMBERED_TROUBLE_TABLE_CONTENT = (
+    "33.2.5.5.2 Reduction unit\n"
+    "Trouble | Cause | Remedy\n"
+    "1) Reduction unit does not rotate.\n\n"
+    "Overloaded | Reduce the load of motor.\n\n"
+    "2) Oil leakage\n\n"
+    "Oil leaks from shaft. | Oil seal is scored. | Replace oil seal.\n\n"
+    "3) Temperature is high.\n\n"
+    "The gear oil is not filled up. | Check oil level and fill oil."
+)
+
+
+def test_is_symptom_matrix_table_detects_numbered_trouble_items():
+    assert _is_symptom_matrix_table(_NUMBERED_TROUBLE_TABLE_CONTENT)
+
+
+def test_is_symptom_matrix_table_ignores_single_numbered_item():
+    # แค่ข้อเดียวไม่ใช่ตารางรวมหลายปัญหา ไม่ต้องกันเข้ม
+    assert not _is_symptom_matrix_table("1) Only one item here, nothing else numbered.")
+
+
+def test_is_symptom_matrix_table_ignores_fully_parenthesized_procedure_steps():
+    # ขั้นตอนติดตั้งแบบ "(6) ... (7) ..." เป็นคนละรูปแบบกับ "1) ... 2) ..." ของตารางปัญหาหลายข้อ
+    steps = "(6) Installing the pump. (7) Coat 8 capscrews with Loctite. (8) Fasten hoses."
+    assert not _is_symptom_matrix_table(steps)
+
+
 def test_safe_fallback_never_selects_a_matrix_table_via_weak_overlap():
     chunk = RetrievedChunk(content=_MATRIX_TABLE_CONTENT, reference="47-33")
     fallback = _select_safe_fallback(
