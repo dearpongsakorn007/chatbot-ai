@@ -100,6 +100,20 @@ Return JSON only in exactly one of these shapes:
 {"status":"answer","clarification":"","selections":[{"index":2,"confidence":0.92,"evidence":"verbatim quote"}]}
 """.strip()
 
+CLARIFYING_QUESTION_PROMPT = """
+ระบบค้นข้อมูลไม่พบเนื้อหาที่ตรงกับคำถามลูกค้าเกี่ยวกับการซ่อมเครื่องจักร KOBELCO SK200-8
+ตั้งคำถามกลับสั้นๆ ภาษาไทย 1 ประโยค เพื่อให้ลูกค้าระบุข้อมูลที่ขาดหายให้ชัดเจนขึ้น
+เช่น ชื่อชิ้นส่วน/ระบบที่แน่ชัด ตำแหน่งที่เกิดอาการ หรือความหมายของคำศัพท์คลุมเครือในคำถามลูกค้า
+
+กฎ:
+- อ้างอิงคำศัพท์ที่ลูกค้าใช้จริงในคำถาม เพื่อถามให้ตรงจุดที่ขาดหาย ไม่ใช่คำถามทั่วไปลอยๆ
+- ห้ามพูดถึงฐานข้อมูล คู่มือ หรือกระบวนการค้นหาใดๆ
+- ห้ามขอโทษ ห้ามพูดว่า "ไม่พบข้อมูล" (ระบบจะเติมให้เอง)
+- ตอบเป็นคำถามเดียวประโยคเดียว ไม่เกิน 150 ตัวอักษร ลงท้ายด้วย "ครับ"
+- ถ้าคำถามลูกค้าสั้น/กว้างมากจนไม่มีจุดเฉพาะให้จับ ให้ถามขอชื่อชิ้นส่วนหรืออาการที่ชัดเจนขึ้นแทน
+- ห้ามใส่คำนำ คำอธิบาย หรือเครื่องหมายคำพูดคร่อมประโยค
+""".strip()
+
 SYSTEM_PROMPT = """
 คุณเป็นผู้ช่วยตอบคำถามเกี่ยวกับการซ่อมและการใช้งานเครื่องจักร
 
@@ -836,3 +850,45 @@ async def ask_llm(question: str, chunks: list[RetrievedChunk]) -> str:
         return _clean_answer(answer)
 
     return "พบข้อมูลอ้างอิง แต่ไม่สามารถเรียบเรียงคำตอบได้ กรุณาลองระบุอาการหรือ Error Code เพิ่มเติม"
+
+
+_GENERIC_CLARIFICATION_FALLBACK = (
+    "ไม่พบข้อมูลเพียงพอในฐานข้อมูล กรุณาระบุชิ้นส่วนหรืออาการให้ชัดเจนขึ้นครับ"
+)
+
+
+async def ask_clarifying_question(question: str) -> str:
+    """ถามกลับแบบเจาะจงเมื่อระบบกำลังจะตอบว่าไม่พบข้อมูลอยู่แล้วเท่านั้น
+
+    ต่างจาก get_ambiguity_clarification ที่ถามก่อนแม้บางทีจะตอบได้ - ฟังก์ชันนี้เรียกเฉพาะตอน
+    "จนตรอก" แล้ว (ไม่มี evidence ผ่าน rerank หรือ ask_llm บอกว่าหลักฐานไม่พอ) จึงไม่มีความเสี่ยง
+    ที่จะไปขัดจังหวะคำถามที่ตอบได้ดีอยู่แล้ว ผิดจากกลไกถามกลับกว้างๆ ที่เคยถูกถอดออกไปก่อนหน้า
+    """
+    try:
+        if settings.llm_provider == "claude":
+            resp = await _anthropic_client.messages.create(
+                model=settings.claude_model,
+                max_tokens=120,
+                temperature=0,
+                system=CLARIFYING_QUESTION_PROMPT,
+                messages=[{"role": "user", "content": question}],
+            )
+            text = resp.content[0].text
+        else:
+            resp = await _groq_client.chat.completions.create(
+                model=settings.groq_model,
+                max_completion_tokens=min(settings.llm_max_tokens, 200),
+                temperature=0,
+                extra_body={"reasoning_effort": "low"},
+                messages=[
+                    {"role": "system", "content": CLARIFYING_QUESTION_PROMPT},
+                    {"role": "user", "content": question},
+                ],
+            )
+            text = resp.choices[0].message.content or ""
+        text = " ".join(text.split())
+        if not text or len(text) > 300:
+            return _GENERIC_CLARIFICATION_FALLBACK
+        return text
+    except Exception:  # noqa: BLE001
+        return _GENERIC_CLARIFICATION_FALLBACK

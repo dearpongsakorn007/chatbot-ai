@@ -10,6 +10,7 @@ from app.models.schemas import LineWebhookPayload, RetrievedChunk
 from app.services.embedding_service import get_embedding
 from app.services.retrieval_service import lookup_error_code, retrieve_chunks
 from app.services.claude_service import (
+    ask_clarifying_question,
     ask_llm,
     extract_error_code,
     get_ambiguity_clarification,
@@ -168,9 +169,12 @@ async def _handle_message(reply_token: str, user_id: str, question: str) -> None
             verified_chunk = await lookup_error_code(error_code)
             if verified_chunk:
                 answer = await ask_llm(question, [verified_chunk])
-                # ถ้า ask_llm ตัดสินใจว่าหลักฐานไม่พอ อย่าแนบรูป/เลขหน้าของ chunk นี้ไปด้วย
-                # ไม่งั้นคำตอบจะขัดแย้งกันเอง (บอกว่าไม่พบข้อมูล แต่ก็มีรูปอ้างอิงแนบมา)
-                reply_chunks = [] if is_insufficient_data_answer(answer) else [verified_chunk]
+                reply_chunks = [verified_chunk]
+                if is_insufficient_data_answer(answer):
+                    # จะตอบว่าไม่พบข้อมูลอยู่แล้ว ไม่มีอะไรจะเสีย เปลี่ยนเป็นถามกลับเจาะจงแทน
+                    # และไม่แนบรูป/เลขหน้าของ chunk นี้ ไม่งั้นคำตอบจะขัดแย้งกันเอง
+                    answer = await ask_clarifying_question(question)
+                    reply_chunks = []
                 answer, images = _prepare_reply(answer, reply_chunks)
                 await reply_message(reply_token, answer, images)
                 log_conversation(user_id, question, answer)
@@ -190,11 +194,13 @@ async def _handle_message(reply_token: str, user_id: str, question: str) -> None
         chunks = reranked.chunks
         if chunks:
             answer = await ask_llm(question, chunks)
-            # เช่นเดียวกับ error-code path: ไม่แนบรูปอ้างอิงถ้าคำตอบสุดท้ายบอกว่าหลักฐานไม่พอ
             if is_insufficient_data_answer(answer):
+                # จะตอบว่าไม่พบข้อมูลอยู่แล้ว ไม่มีอะไรจะเสีย เปลี่ยนเป็นถามกลับเจาะจงแทน
+                # และไม่แนบรูปอ้างอิงของ chunk นี้ ไม่งั้นคำตอบจะขัดแย้งกันเอง
+                answer = await ask_clarifying_question(question)
                 chunks = []
         else:
-            answer = "ไม่พบหลักฐานที่ตรงกับอาการในฐานข้อมูล กรุณาระบุชิ้นส่วน ตำแหน่ง และลักษณะอาการเพิ่มเติม"
+            answer = await ask_clarifying_question(question)
         answer, images = _prepare_reply(answer, chunks)
         await reply_message(reply_token, answer, images)
         log_conversation(user_id, question, answer)

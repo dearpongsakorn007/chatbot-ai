@@ -1,4 +1,6 @@
+import asyncio
 import json
+from unittest.mock import patch
 
 from app.models.schemas import RetrievedChunk
 from app.services.claude_service import (
@@ -8,6 +10,7 @@ from app.services.claude_service import (
     _candidate_support_score,
     _filter_scope_mismatches,
     _select_safe_fallback,
+    ask_clarifying_question,
     get_ambiguity_clarification,
     infer_search_category_hint,
     is_insufficient_data_answer,
@@ -329,6 +332,44 @@ def test_is_insufficient_data_answer_detects_the_rule_8_boilerplate():
 def test_is_insufficient_data_answer_ignores_real_answers():
     answer = "เกิดจากแรงดันปั๊มต่ำ ให้ตรวจแรงดันปั๊มและตรวจฟิลเตอร์ครับ"
     assert not is_insufficient_data_answer(answer)
+
+
+def test_ask_clarifying_question_returns_llm_generated_question():
+    class FakeMessage:
+        def __init__(self, content):
+            self.content = content
+
+    class FakeChoice:
+        def __init__(self, content):
+            self.message = FakeMessage(content)
+
+    class FakeResp:
+        def __init__(self, content):
+            self.choices = [FakeChoice(content)]
+
+    async def fake_create(*args, **kwargs):
+        return FakeResp("ตัวสั้นกับตัวยาวหมายถึงสายไฮดรอลิกเส้นไหนครับ")
+
+    with patch(
+        "app.services.claude_service._groq_client.chat.completions.create",
+        side_effect=fake_create,
+    ):
+        result = asyncio.run(
+            ask_clarifying_question("วิ่งซ้ายขวาไม่เท่ากัน ตัวสั้นกับตัวยาวเกี่ยวกันไหม")
+        )
+    assert result == "ตัวสั้นกับตัวยาวหมายถึงสายไฮดรอลิกเส้นไหนครับ"
+
+
+def test_ask_clarifying_question_falls_back_when_llm_call_fails():
+    async def fake_create(*args, **kwargs):
+        raise RuntimeError("boom")
+
+    with patch(
+        "app.services.claude_service._groq_client.chat.completions.create",
+        side_effect=fake_create,
+    ):
+        result = asyncio.run(ask_clarifying_question("คำถามอะไรสักอย่าง"))
+    assert result == "ไม่พบข้อมูลเพียงพอในฐานข้อมูล กรุณาระบุชิ้นส่วนหรืออาการให้ชัดเจนขึ้นครับ"
 
 
 def test_clean_answer_enforces_length_as_single_flowing_line():
