@@ -74,6 +74,12 @@ CONVERSATION_OPENERS = {
     "แนะนำหน่อย",
 }
 OPENING_RESPONSE = "สวัสดีครับ บริษัท TIS คุณลูกค้าสนใจสอบถามรถรุ่นไหนครับ"
+# กันบอทถามกลับวนไม่จบเมื่อข้อมูลไม่มีอยู่ในคู่มือจริงๆ (เจอจริง: ถามเรื่องเกรดน้ำมันไฮดรอลิก
+# ที่ไม่มีข้อมูลในคู่มือเล่มนี้เลย บอทเลยถามกลับซ้ำไปเรื่อยๆ ไม่เคยได้คำตอบสักที)
+MAX_CLARIFICATION_ROUNDS = 2
+GIVE_UP_ANSWER = (
+    "ไม่พบข้อมูลนี้ในคู่มือที่มีอยู่ กรุณาสอบถามช่างอาวุโสหรือระบุ Error Code ที่ขึ้นจอเพิ่มเติมครับ"
+)
 MODEL_ONLY_PATTERN = re.compile(
     r"^\s*(?:(?:รถ\s*)?รุ่น\s*)?"
     r"(?:(?:kobelco|komatsu|hitachi|volvo|cat(?:erpillar)?)\s+)?"
@@ -150,6 +156,19 @@ def _prepare_reply(
     return "\n\n".join(parts), images
 
 
+async def _clarify_or_give_up(user_id: str, question: str, rounds: int) -> str:
+    """ถามกลับต่อได้ถ้ายังไม่ครบเพดานรอบ ไม่งั้นเลิกถามแล้วบอกตรงๆ ว่าไม่พบข้อมูล
+
+    กันกรณีข้อมูลไม่มีอยู่ในคู่มือจริงๆ (เช่น เกรดน้ำมันไฮดรอลิก) ทำให้ถามกลับวนไม่จบ
+    """
+    if rounds >= MAX_CLARIFICATION_ROUNDS:
+        clear_pending_clarification(user_id)
+        return GIVE_UP_ANSWER
+    answer = await ask_clarifying_question(question)
+    save_pending_clarification(user_id, question, rounds + 1)
+    return answer
+
+
 async def _handle_message(reply_token: str, user_id: str, question: str) -> None:
     try:
         if _is_conversation_opener(question):
@@ -168,14 +187,16 @@ async def _handle_message(reply_token: str, user_id: str, question: str) -> None
 
         # ถ้าบอทเพิ่งถามกลับไปหาผู้ใช้คนนี้และยังไม่หมดอายุ ให้ผูกคำตอบสั้นๆ นี้เข้ากับคำถามเดิม
         # ก่อนค้นหา ไม่งั้นข้อความสั้นๆ (เช่น "ระบบบิดครับ") จะถูกค้นหาแบบไม่มีบริบทแล้วตอบผิดเรื่อง
-        pending_question = get_pending_clarification(user_id)
-        if pending_question:
+        pending = get_pending_clarification(user_id)
+        clarification_rounds = 0
+        if pending:
+            pending_question, clarification_rounds = pending
             clear_pending_clarification(user_id)
             question = f"{pending_question} {question}"
 
         clarification = get_ambiguity_clarification(question)
         if clarification:
-            save_pending_clarification(user_id, question)
+            save_pending_clarification(user_id, question, clarification_rounds + 1)
             answer, images = _prepare_reply(clarification, [])
             await reply_message(reply_token, answer, images)
             log_conversation(user_id, question, answer)
@@ -189,9 +210,11 @@ async def _handle_message(reply_token: str, user_id: str, question: str) -> None
                 reply_chunks = [verified_chunk]
                 if is_insufficient_data_answer(answer):
                     # จะตอบว่าไม่พบข้อมูลอยู่แล้ว ไม่มีอะไรจะเสีย เปลี่ยนเป็นถามกลับเจาะจงแทน
-                    # และไม่แนบรูป/เลขหน้าของ chunk นี้ ไม่งั้นคำตอบจะขัดแย้งกันเอง
-                    answer = await ask_clarifying_question(question)
-                    save_pending_clarification(user_id, question)
+                    # (หรือเลิกถามถ้าครบเพดานแล้ว) และไม่แนบรูป/เลขหน้าของ chunk นี้
+                    # ไม่งั้นคำตอบจะขัดแย้งกันเอง
+                    answer = await _clarify_or_give_up(
+                        user_id, question, clarification_rounds
+                    )
                     reply_chunks = []
                 answer, images = _prepare_reply(answer, reply_chunks)
                 await reply_message(reply_token, answer, images)
@@ -214,13 +237,11 @@ async def _handle_message(reply_token: str, user_id: str, question: str) -> None
             answer = await ask_llm(question, chunks)
             if is_insufficient_data_answer(answer):
                 # จะตอบว่าไม่พบข้อมูลอยู่แล้ว ไม่มีอะไรจะเสีย เปลี่ยนเป็นถามกลับเจาะจงแทน
-                # และไม่แนบรูปอ้างอิงของ chunk นี้ ไม่งั้นคำตอบจะขัดแย้งกันเอง
-                answer = await ask_clarifying_question(question)
-                save_pending_clarification(user_id, question)
+                # (หรือเลิกถามถ้าครบเพดานแล้ว) และไม่แนบรูปอ้างอิงของ chunk นี้
+                answer = await _clarify_or_give_up(user_id, question, clarification_rounds)
                 chunks = []
         else:
-            answer = await ask_clarifying_question(question)
-            save_pending_clarification(user_id, question)
+            answer = await _clarify_or_give_up(user_id, question, clarification_rounds)
         answer, images = _prepare_reply(answer, chunks)
         await reply_message(reply_token, answer, images)
         log_conversation(user_id, question, answer)

@@ -19,14 +19,18 @@ _AWAITING_STATUS = "collecting"
 _EXPIRY_MINUTES = 30
 
 
-def get_pending_clarification(user_id: str) -> str | None:
-    """คืนคำถามเดิมที่บอทเพิ่งถามกลับไปหาผู้ใช้คนนี้ ถ้ายังไม่หมดอายุ ไม่งั้นคืน None"""
+def get_pending_clarification(user_id: str) -> tuple[str, int] | None:
+    """คืน (คำถามเดิม, จำนวนรอบที่ถามกลับไปแล้ว) ถ้ายังไม่หมดอายุ ไม่งั้นคืน None
+
+    จำนวนรอบใช้จำกัดไม่ให้บอทถามกลับวนไม่จบ (เจอจริง: คำถามเรื่องเกรดน้ำมันไฮดรอลิกที่ไม่มี
+    ข้อมูลในคู่มือเลย ทำให้บอทถามกลับซ้ำไปเรื่อยๆ ไม่เคยได้คำตอบสักที)
+    """
     try:
         supabase = get_supabase()
         now_iso = datetime.now(timezone.utc).isoformat()
         result = (
             supabase.table(_STATE_TABLE)
-            .select("question_detail,expires_at")
+            .select("question_detail,context,expires_at")
             .eq("line_user_id", user_id)
             .eq("status", _AWAITING_STATUS)
             .gt("expires_at", now_iso)
@@ -37,10 +41,21 @@ def get_pending_clarification(user_id: str) -> str | None:
         logger.warning("failed to read conversation state: %s", exc)
         return None
     rows = result.data or []
-    return rows[0].get("question_detail") if rows else None
+    if not rows:
+        return None
+    question_detail = rows[0].get("question_detail")
+    if not question_detail:
+        return None
+    context = rows[0].get("context") or {}
+    rounds = int(context.get("clarification_rounds") or 0)
+    return question_detail, rounds
 
 
-def save_pending_clarification(user_id: str, original_question: str) -> None:
+def save_pending_clarification(
+    user_id: str,
+    original_question: str,
+    rounds: int,
+) -> None:
     """บันทึกว่ากำลังรอคำตอบชี้แจงคำถามนี้อยู่ เก็บแค่แถวเดียวต่อผู้ใช้ (upsert ทับของเดิม)"""
     try:
         supabase = get_supabase()
@@ -52,7 +67,7 @@ def save_pending_clarification(user_id: str, original_question: str) -> None:
                 "line_user_id": user_id,
                 "question_detail": original_question,
                 "status": _AWAITING_STATUS,
-                "context": {},
+                "context": {"clarification_rounds": rounds},
                 "expires_at": expires_at,
             },
             on_conflict="line_user_id",
