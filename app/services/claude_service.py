@@ -191,6 +191,14 @@ _PROCEDURE_KEYWORDS = (
 _PART_KEYWORDS = ("อะไหล่", "ชิ้นส่วน", "หมายเลขอะไหล่", "part number", "component")
 
 
+def extract_error_code(question: str) -> str | None:
+    """ดึงรหัส error code ตัวแรกที่เจอในคำถาม (เช่น A015) ให้เป็นตัวพิมพ์ใหญ่
+    คืนค่า None ถ้าคำถามไม่มีรูปแบบรหัส error code
+    """
+    match = _ERROR_CODE_PATTERN.search(question)
+    return match.group(0).upper() if match else None
+
+
 def infer_content_type_filter(question: str) -> list[str] | None:
     """จำกัดการค้นหาเฉพาะหมวด error code เมื่อคำถามระบุรหัส/พูดถึง error code ชัดเจน
     ป้องกันไม่ให้ผลลัพธ์ปนกับ chunk หมวดอื่น (procedure/table/narrative) ที่ไม่เกี่ยวกับรหัสที่ถาม

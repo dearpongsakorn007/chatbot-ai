@@ -8,9 +8,10 @@ from fastapi import APIRouter, Request, HTTPException, BackgroundTasks
 from app.config import settings
 from app.models.schemas import LineWebhookPayload, RetrievedChunk
 from app.services.embedding_service import get_embedding
-from app.services.retrieval_service import retrieve_chunks
+from app.services.retrieval_service import lookup_error_code, retrieve_chunks
 from app.services.claude_service import (
     ask_llm,
+    extract_error_code,
     infer_content_type_filter,
     infer_search_category_hint,
     rerank_chunks,
@@ -152,6 +153,16 @@ async def _handle_message(reply_token: str, user_id: str, question: str) -> None
             await reply_message(reply_token, model_followup)
             log_conversation(user_id, question, model_followup)
             return
+
+        error_code = extract_error_code(question)
+        if error_code:
+            verified_chunk = await lookup_error_code(error_code)
+            if verified_chunk:
+                answer = await ask_llm(question, [verified_chunk])
+                answer, images = _prepare_reply(answer, [verified_chunk])
+                await reply_message(reply_token, answer, images)
+                log_conversation(user_id, question, answer)
+                return
 
         search_queries = await rewrite_search_queries(question)
         embedding_text = question

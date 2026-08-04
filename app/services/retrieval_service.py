@@ -15,6 +15,71 @@ VECTOR_WEIGHT = 2.0
 # ต้องตรงกับ document_id_exact ที่ match_documents/search_sk2008_fulltext ใช้กรองอยู่แล้ว
 # กันไม่ให้รูปอ้างอิงหลุดไปหยิบจากข้อมูลชุดเก่า (v1/v2/v3/...) ที่เลขหน้าไม่ตรงกับ v4
 CURRENT_DOCUMENT_ID = "kobelco-sk2008-repair-ocr-v4"
+# บอทตัวนี้รองรับคู่มือรุ่นเดียว ตรงกับ CURRENT_DOCUMENT_ID ด้านบน
+CURRENT_MACHINE_MODEL = "SK200-8"
+
+
+def _build_error_code_content(row: dict) -> str:
+    """ประกอบเนื้อหาจากคอลัมน์ที่ตรวจสอบแล้ว (ไม่ใช้ source_content ซึ่งเป็น OCR ดิบที่ยังเพี้ยนอยู่)"""
+    lines = [f"Error code: {row.get('code')} ({row.get('brand', '')} {row.get('model', '')})".strip()]
+    if row.get("meaning"):
+        lines.append(f"Meaning: {row['meaning']}")
+    if row.get("judgment_condition"):
+        lines.append(f"Judging condition: {row['judgment_condition']}")
+    if row.get("symptom"):
+        lines.append(f"Symptom: {row['symptom']}")
+    if row.get("failure_control"):
+        lines.append(f"Control in the event of failure: {row['failure_control']}")
+    if row.get("normal_condition"):
+        lines.append(f"Normal condition after correction: {row['normal_condition']}")
+    related_parts = row.get("related_parts") or []
+    if related_parts:
+        lines.append("Related parts: " + ", ".join(related_parts))
+    check_steps = row.get("check_steps") or []
+    if check_steps:
+        lines.append("Checking steps:")
+        for index, step in enumerate(check_steps, start=1):
+            lines.append(f"{index}. {step}")
+    if row.get("diagnosis_screen"):
+        lines.append(f"Service diagnosis screen: {row['diagnosis_screen']}")
+    return "\n".join(lines)
+
+
+async def lookup_error_code(code: str) -> RetrievedChunk | None:
+    """ค้นหา error code ตรง ๆ จากตารางที่ตรวจสอบแล้ว (error_codes_sk2008)
+
+    ใช้ก่อนเสมอเมื่อคำถามระบุ error code ชัดเจน เพราะข้อมูลผ่าน QA/verified แล้ว
+    แม่นยำกว่า chunk ที่ OCR มาจาก PDF ตรง ๆ ใน documents_gemini มาก
+    คืนค่า None เมื่อไม่พบ ให้ retrieval แบบเดิม (vector/full-text) ทำงานต่อแทน
+    """
+    supabase = get_supabase()
+    try:
+        result = (
+            supabase.table("error_codes_sk2008")
+            .select("*")
+            .eq("code", code.upper())
+            .eq("model", CURRENT_MACHINE_MODEL)
+            .eq("verified", True)
+            .limit(1)
+            .execute()
+        )
+    except Exception as exc:
+        logger.warning("error_codes_sk2008 lookup failed: %s", exc)
+        return None
+
+    rows = result.data or []
+    if not rows:
+        return None
+    row = rows[0]
+    return RetrievedChunk(
+        content=_build_error_code_content(row),
+        verified_evidence=f"Verified error code table entry for {row.get('code')}",
+        source=f"{row.get('source_file') or 'error_codes_sk2008'} (verified error code table)",
+        score=1.0,
+        reference=row.get("manual_page"),
+        image_url=row.get("image_url"),
+        preview_image_url=row.get("image_url"),
+    )
 
 
 def _row_key(row: dict) -> str:
