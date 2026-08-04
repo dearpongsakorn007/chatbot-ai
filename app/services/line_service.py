@@ -27,6 +27,9 @@ def _valid_image_pairs(
 def _build_image_carousel(images: list[tuple[str, str]]) -> dict:
     """รูปอ้างอิงหลายหน้า (chunk เดียวครอบคลุมหลายหน้า) ให้อยู่ในกรอบเดียวกัน
     เป็น carousel เดียว ปัด/แตะเพื่อดูรูปถัดไป แทนที่จะส่งเป็นรูปแยกเรียงยาวในแชท
+
+    รูปใน hero component ของ Flex Message ไม่มีตัวขยายเต็มจอในตัวแบบ image message ปกติ
+    (แตะแล้วไม่มีอะไรเกิดขึ้น) ต้องผูก action แบบ uri ชี้ไปยังรูปต้นฉบับเอง ให้แตะแล้วเปิดดูเต็มได้
     """
     bubbles = [
         {
@@ -37,6 +40,7 @@ def _build_image_carousel(images: list[tuple[str, str]]) -> dict:
                 "size": "full",
                 "aspectRatio": "3:4",
                 "aspectMode": "cover",
+                "action": {"type": "uri", "uri": original_url},
             },
         }
         for original_url, _ in images

@@ -30,6 +30,25 @@ def test_build_messages_groups_multiple_page_images_into_one_carousel():
     assert flex["contents"]["contents"][1]["hero"]["url"] == "https://example.com/p2.jpg"
 
 
+def test_carousel_hero_images_are_tappable_to_view_full_size():
+    # hero image ใน Flex Message ไม่มีตัวขยายเต็มจอในตัว ต้องผูก action แบบ uri เอง
+    # ไม่งั้นแตะแล้วไม่มีอะไรเกิดขึ้น (นี่คือบั๊กที่เจอจริง)
+    images = [
+        ("https://example.com/p1.jpg", "https://example.com/p1.jpg"),
+        ("https://example.com/p2.jpg", "https://example.com/p2.jpg"),
+    ]
+    messages = _build_messages("คำตอบ", images)
+    bubbles = messages[1]["contents"]["contents"]
+    assert bubbles[0]["hero"]["action"] == {
+        "type": "uri",
+        "uri": "https://example.com/p1.jpg",
+    }
+    assert bubbles[1]["hero"]["action"] == {
+        "type": "uri",
+        "uri": "https://example.com/p2.jpg",
+    }
+
+
 def test_build_messages_deduplicates_and_rejects_non_https_urls():
     images = [
         ("https://example.com/p1.jpg", "https://example.com/p1.jpg"),
