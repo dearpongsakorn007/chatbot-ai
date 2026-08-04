@@ -8,6 +8,7 @@ from app.services.claude_service import (
     _build_context,
     _clean_answer,
     _candidate_support_score,
+    _filter_procedure_only_pages,
     _filter_scope_mismatches,
     _select_safe_fallback,
     ask_clarifying_question,
@@ -248,14 +249,12 @@ def test_safe_fallback_selects_best_supported_ranked_page():
     assert fallback.verified_evidence is None
 
 
-def test_safe_fallback_accepts_weak_single_term_overlap():
-    # เดิม threshold=2 ปฏิเสธ overlap คำเดียว แต่พบว่าเข้มไปจนตอบไม่ครอบคลุมบ่อย
-    # จึงลด _SAFE_FALLBACK_MIN_SUPPORT เหลือ 1 ยอมรับ overlap แบบนี้เป็นหลักฐานอ่อนแทน
+def test_safe_fallback_rejects_weak_single_term_overlap():
+    # เคยลด threshold เหลือ 1 เพื่อเพิ่ม recall แต่พบจริงว่าดึงหน้าที่แค่มีคำซ้ำผิวเผินมาตอบผิดเรื่อง
+    # (เช่น หน้าติดตั้งปั๊มใหม่มาตอบคำถามเรื่องปั๊มไม่สร้างแรงดัน) จึงกลับไปที่ 2 เหมือนเดิม
     chunk = RetrievedChunk(content="General pump maintenance", reference="1-1")
     assert _candidate_support_score(chunk, ["pump pressure sensor"]) == 1
-    fallback = _select_safe_fallback([chunk], ["pump pressure sensor"])
-    assert fallback is not None
-    assert fallback.reference == "1-1"
+    assert _select_safe_fallback([chunk], ["pump pressure sensor"]) is None
 
 
 def test_safe_fallback_rejects_no_term_overlap():
@@ -433,3 +432,22 @@ def test_scope_filter_rejects_specific_actuator_for_general_machine_symptom():
 def test_scope_filter_keeps_actuator_page_when_question_names_it():
     chunk = RetrievedChunk(content="Section: troubleshooting\nSlow boom up, insufficient power")
     assert _filter_scope_mismatches("บูมยกช้า", [chunk]) == [chunk]
+
+
+def test_procedure_filter_rejects_installation_page_for_troubleshooting_question():
+    chunks = [
+        RetrievedChunk(content="Subsection: 33.4.8.3 INSTALLATION\nInstalling the pump..."),
+        RetrievedChunk(content="Section: troubleshooting\nPump does not build up pressure..."),
+    ]
+    filtered = _filter_procedure_only_pages("ปั๊มไม่มีแรงเกิดจากอะไรครับ", chunks)
+    assert [chunk.content for chunk in filtered] == [chunks[1].content]
+
+
+def test_procedure_filter_keeps_installation_page_for_procedure_question():
+    chunk = RetrievedChunk(content="Subsection: 33.4.8.3 INSTALLATION\nInstalling the pump...")
+    assert _filter_procedure_only_pages("วิธีติดตั้งปั๊มใหม่", [chunk]) == [chunk]
+
+
+def test_procedure_filter_does_not_empty_out_when_only_installation_pages_exist():
+    chunk = RetrievedChunk(content="Subsection: 33.4.8.3 INSTALLATION\nInstalling the pump...")
+    assert _filter_procedure_only_pages("ปั๊มไม่มีแรงเกิดจากอะไรครับ", [chunk]) == [chunk]

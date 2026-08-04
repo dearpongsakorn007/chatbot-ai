@@ -120,6 +120,10 @@ SYSTEM_PROMPT = """
 กฎการตอบ:
 1. ตอบโดยใช้เฉพาะข้อมูลอ้างอิงจากฐานข้อมูลที่ส่งให้เท่านั้น ห้ามเดาหรือเติมข้อมูลเอง
 2. ตอบเป็นภาษาไทยธรรมชาติ แบบช่างเทคนิคอธิบายให้ลูกค้าฟังปากเปล่า ไม่ใช่รายงานที่มีหัวข้อ
+2.1 แปลข้อมูลอ้างอิงที่เป็นภาษาอังกฤษเป็นภาษาไทยทั้งหมดเสมอ ห้ามคงชื่อขั้นตอน หัวข้อย่อย หรือประโยคภาษาอังกฤษ
+    ไว้ในเครื่องหมายคำพูดโดยไม่แปล (เช่น ห้ามเขียน "Bleed air in pump" ให้แปลว่า "ไล่ลมออกจากปั๊ม")
+    ยกเว้นสิ่งที่ต้องคงไว้ตามต้นฉบับเพราะเป็นตัวระบุเฉพาะ ได้แก่ รุ่นเครื่อง รหัสอะไหล่ รหัส error code
+    ชื่อขั้ว/คอนเนคเตอร์ และตัวเลข/หน่วยวัด
 3. ห้ามขึ้นต้นประโยคหรือส่วนใดของคำตอบด้วยหัวข้อ/label เช่น "สาเหตุ:", "ตรวจสอบ:", "ค่ามาตรฐาน:", "วิธีแก้:"
    หรือคำอื่นที่ทำหน้าที่เป็นหัวข้อคล้ายกัน ให้ร้อยเรียงเนื้อหาทั้งหมดเป็นข้อความเดียวไหลต่อเนื่องกันเหมือนพูดคุยจริง
    ไม่เกริ่นนำ ไม่ทวนคำถาม
@@ -160,7 +164,9 @@ _anthropic_client = AsyncAnthropic(api_key=settings.anthropic_api_key)
 _groq_client = AsyncOpenAI(api_key=settings.groq_api_key, base_url="https://api.groq.com/openai/v1")
 _SEARCH_QUERY_CACHE_MAX = 512
 _MIN_EVIDENCE_CONFIDENCE = 0.55
-_SAFE_FALLBACK_MIN_SUPPORT = 1
+# เคยลดเหลือ 1 เพื่อเพิ่ม recall แต่พบจริงว่าดึงหน้าที่แค่มีคำซ้ำผิวเผิน (เช่น หน้าติดตั้งปั๊มใหม่
+# มาตอบคำถามเรื่องปั๊มไม่สร้างแรงดัน) กลับไป 2 เพื่อกันหลักฐานอ่อนเกินไปหลุดผ่านมาตอบผิดเรื่อง
+_SAFE_FALLBACK_MIN_SUPPORT = 2
 _MAX_RERANK_SELECTIONS = 3
 _search_query_cache: OrderedDict[str, tuple[str, ...]] = OrderedDict()
 _FUNCTION_SCOPE_TERMS = {
@@ -589,6 +595,51 @@ def _filter_scope_mismatches(
     return filtered
 
 
+# หัวข้อคู่มือที่เป็นขั้นตอนติดตั้ง/ประกอบชิ้นส่วนใหม่ล้วนๆ ไม่ใช่การวินิจฉัยอาการเสีย
+# ศัพท์ในหน้าแบบนี้ (pump, hydraulic oil, bleed air, torque) มักซ้ำกับหน้าวินิจฉัยจริงเยอะมาก
+# จน lexical overlap ทั่วไปแยกไม่ออก จึงต้องกันด้วยชื่อหัวข้อโดยตรง
+_PROCEDURE_ONLY_SECTION_TERMS = (
+    "installation",
+    "assembly",
+    "removal and installing",
+    "disassembly",
+    "reassembly",
+)
+
+
+def _is_procedure_only_heading(heading_area: str) -> bool:
+    normalized = heading_area.casefold()
+    return any(term in normalized for term in _PROCEDURE_ONLY_SECTION_TERMS)
+
+
+_PROCEDURE_SEEKING_CATEGORIES = {
+    "procedure inspection adjustment",
+    "component part number removal installation",
+}
+
+
+def _filter_procedure_only_pages(
+    question: str,
+    chunks: list[RetrievedChunk],
+) -> list[RetrievedChunk]:
+    """อย่าเอาหน้าติดตั้ง/ประกอบชิ้นส่วนใหม่มาตอบคำถามวินิจฉัยอาการเสีย
+
+    เจอจริงจากบทสนทนา: คำถาม "ปั๊มไม่สร้างแรงดัน" ถูกตอบด้วยหน้า "Installing the pump"
+    เพราะศัพท์ซ้ำกันเยอะ (pump, hydraulic oil, bleed air) ทั้งที่คนละเรื่องกันเลย
+    ใช้ allowlist แคบๆ แทนการเช็คว่าเป็นคำถามวินิจฉัยหรือไม่ เพราะคำถามจริงมักมีคำวัดค่า
+    (เช่น "แรงดัน") ปนอยู่ ทำให้ infer_search_category_hint จัดเป็นหมวดวัดค่าแทนหมวดวินิจฉัย
+    ทั้งที่ยังเป็นคำถามอาการเสียอยู่ดี จึงกรองออกเป็นค่าเริ่มต้นเสมอ ยกเว้นคำถามจะขอวิธีติดตั้ง/
+    ประกอบ/อะไหล่ตรงๆ (2 หมวดนี้เท่านั้น) และไม่กรองจนเหลือ 0 (กันเคสหน้าเดียวที่เจอเป็นหน้า
+    ติดตั้งจริงๆ แต่เป็นหลักฐานที่ดีที่สุดที่มี)
+    """
+    if infer_search_category_hint(question) in _PROCEDURE_SEEKING_CATEGORIES:
+        return chunks
+    filtered = [
+        chunk for chunk in chunks if not _is_procedure_only_heading(chunk.content[:2000])
+    ]
+    return filtered if filtered else chunks
+
+
 async def rewrite_search_queries(question: str) -> list[str]:
     """Translate any user phrasing into technical manual search terms."""
     cache_key = _question_cache_key(question)
@@ -637,6 +688,7 @@ async def rerank_chunks(
     original_chunks = chunks
     input_count = len(original_chunks)
     chunks = _filter_scope_mismatches(question, original_chunks)
+    chunks = _filter_procedure_only_pages(question, chunks)
     if not chunks:
         fallback = _select_safe_fallback(
             original_chunks,
