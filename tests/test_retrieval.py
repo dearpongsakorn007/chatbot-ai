@@ -240,9 +240,19 @@ def test_safe_fallback_selects_best_supported_ranked_page():
     assert fallback.verified_evidence is None
 
 
-def test_safe_fallback_rejects_weak_single_term_overlap():
+def test_safe_fallback_accepts_weak_single_term_overlap():
+    # เดิม threshold=2 ปฏิเสธ overlap คำเดียว แต่พบว่าเข้มไปจนตอบไม่ครอบคลุมบ่อย
+    # จึงลด _SAFE_FALLBACK_MIN_SUPPORT เหลือ 1 ยอมรับ overlap แบบนี้เป็นหลักฐานอ่อนแทน
     chunk = RetrievedChunk(content="General pump maintenance", reference="1-1")
     assert _candidate_support_score(chunk, ["pump pressure sensor"]) == 1
+    fallback = _select_safe_fallback([chunk], ["pump pressure sensor"])
+    assert fallback is not None
+    assert fallback.reference == "1-1"
+
+
+def test_safe_fallback_rejects_no_term_overlap():
+    chunk = RetrievedChunk(content="Unrelated cabin air filter replacement", reference="1-1")
+    assert _candidate_support_score(chunk, ["pump pressure sensor"]) == 0
     assert _select_safe_fallback([chunk], ["pump pressure sensor"]) is None
 
 
@@ -287,20 +297,30 @@ def test_clean_answer_removes_model_generated_source_labels():
 
 def test_clean_answer_replaces_uncertain_cause_wording():
     answer = "สาเหตุอาจมาจากแรงดันปั๊มต่ำ ซึ่งอาจจะทำให้เครื่องช้า"
-    assert _clean_answer(answer) == "สาเหตุ: แรงดันปั๊มต่ำ ซึ่งทำให้เครื่องช้า"
+    assert _clean_answer(answer) == "สาเหตุเกิดจากแรงดันปั๊มต่ำ ซึ่งทำให้เครื่องช้า"
 
 
-def test_clean_answer_keeps_ordered_diagnostic_checks_and_enforces_length():
+def test_clean_answer_strips_stray_headers_the_model_should_no_longer_use():
     answer = (
-        "สาเหตุ: แรงดันปั๊มต่ำ สาเหตุ: วาล์วผิดปกติ\n"
-        "ตรวจสอบ: ตรวจแรงดันปั๊ม และตรวจฟิลเตอร์\n"
-        "วิธีแก้: 1) ปรับแรงดันปั๊ม 2) เปลี่ยนวาล์ว"
+        "สาเหตุ: แรงดันปั๊มต่ำ อาจจะทำให้เครื่องช้า "
+        "ตรวจสอบ: ตรวจแรงดันปั๊มและตรวจฟิลเตอร์ "
+        "วิธีแก้: ปรับแรงดันปั๊มให้ได้ค่ามาตรฐาน"
     )
     cleaned = _clean_answer(answer)
-    assert cleaned.count("สาเหตุ:") == 1
-    assert len(cleaned) <= 350
+    assert "สาเหตุ:" not in cleaned
+    assert "ตรวจสอบ:" not in cleaned
+    assert "วิธีแก้:" not in cleaned
+    assert "อาจจะ" not in cleaned
+    assert "แรงดันปั๊มต่ำ" in cleaned
     assert "ตรวจฟิลเตอร์" in cleaned
-    assert "เปลี่ยนวาล์ว" in cleaned
+    assert "ปรับแรงดันปั๊มให้ได้ค่ามาตรฐาน" in cleaned
+
+
+def test_clean_answer_enforces_length_as_single_flowing_line():
+    long_sentence = "ตรวจแรงดันปั๊มและตรวจฟิลเตอร์น้ำมันไฮดรอลิกทุกจุดตามลำดับในคู่มือ" * 12
+    cleaned = _clean_answer(long_sentence)
+    assert len(cleaned) <= 600
+    assert "\n" not in cleaned
     assert "…" not in cleaned
 
 

@@ -57,8 +57,8 @@ Rules:
 - Never ask a clarification question. When wording can describe different failures, select
   the candidate that supports the most explicit component, measurement, identifier, or
   physical symptom and keep the answer within that supported scope.
-- For status "answer", select at most 2 candidates. Candidate 1 must contain the
-  strongest direct evidence, and candidate 2 must support the same failure only.
+- For status "answer", select at most 3 candidates. Candidate 1 must contain the
+  strongest direct evidence, and candidates 2-3 must support the same failure only.
 - Reject generic pages, nearby topics, and pages about a different system or component.
 - Matching only a machine model, component name, or broad symptom is not enough.
 - Do not map a whole-machine symptom such as generally slow or low power to one specific
@@ -105,10 +105,14 @@ SYSTEM_PROMPT = """
 
 กฎการตอบ:
 1. ตอบโดยใช้เฉพาะข้อมูลอ้างอิงจากฐานข้อมูลที่ส่งให้เท่านั้น ห้ามเดาหรือเติมข้อมูลเอง
-2. ตอบเป็นภาษาไทยที่เป็นธรรมชาติ ใช้คำง่าย และเรียบเรียงให้อ่านเข้าใจได้ทันที
-3. ตอบสั้น กระชับ และตรงคำถาม ไม่เกริ่นนำและไม่ทวนคำถาม
-4. คำตอบทั้งหมดต้องไม่เกิน 350 ตัวอักษร เขียนแต่ละหัวข้อคนละบรรทัดและไม่ใช้หัวข้อย่อยซ้อนกัน แต่ละหัวข้อต้องไม่เกิน 1 ประโยคสั้น
-5. ใช้เฉพาะหัวข้อที่มีข้อมูลจริง ได้แก่ "สาเหตุ:", "ตรวจสอบ:", "ค่ามาตรฐาน:" และ "วิธีแก้:" หากไม่มีข้อมูลหัวข้อใดให้ตัดหัวข้อนั้นออก
+2. ตอบเป็นภาษาไทยธรรมชาติ แบบช่างเทคนิคอธิบายให้ลูกค้าฟังปากเปล่า ไม่ใช่รายงานที่มีหัวข้อ
+3. ห้ามขึ้นต้นประโยคหรือส่วนใดของคำตอบด้วยหัวข้อ/label เช่น "สาเหตุ:", "ตรวจสอบ:", "ค่ามาตรฐาน:", "วิธีแก้:"
+   หรือคำอื่นที่ทำหน้าที่เป็นหัวข้อคล้ายกัน ให้ร้อยเรียงเนื้อหาทั้งหมดเป็นข้อความเดียวไหลต่อเนื่องกันเหมือนพูดคุยจริง
+   ไม่เกริ่นนำ ไม่ทวนคำถาม
+4. คำตอบทั้งหมดต้องไม่เกิน 600 ตัวอักษร เขียนเป็นข้อความเดียว ไม่ขึ้นบรรทัดใหม่โดยไม่จำเป็น
+   ถ้าต้องแจกแจงขั้นตอนตรวจสอบหลายข้อ ให้ใส่เลข 1) 2) 3) ต่อกันในประโยคเดียวกันได้ ไม่ต้องแยกบรรทัด
+5. พูดถึงเฉพาะประเด็นที่มีข้อมูลจริงรองรับ (เช่น สาเหตุ, สิ่งที่ต้องตรวจ, ค่ามาตรฐาน, วิธีแก้) โดยไม่ต้องประกาศชื่อหัวข้อ
+   เรียงลำดับให้อ่านลื่นตามธรรมชาติ ถ้าไม่มีข้อมูลด้านไหนก็ข้ามด้านนั้นไปเลย ไม่ต้องพยายามพูดให้ครบทุกด้าน
 6. เลือกข้อมูลตามเจตนาคำถาม: อาการเสียให้เรียงจุดตรวจตามคู่มือ, Error Code ให้บอกความหมาย/เงื่อนไข/จุดตรวจ, ค่ามาตรฐานให้ระบุชิ้นส่วน/เงื่อนไข/ค่าและหน่วย, วิธีซ่อมให้รักษาลำดับขั้นตอน, อะไหล่และวงจรไฟฟ้าให้ระบุชิ้นส่วนหรือขั้วที่ตรงคำถาม
 7. ห้ามกล่าวอ้างว่ามีข้อมูล รูป หรือขั้นตอนใด หากไม่ได้อยู่ในข้อมูลอ้างอิง
 8. หากข้อมูลไม่เพียงพอ ให้ตอบว่า "ไม่พบข้อมูลเพียงพอในฐานข้อมูล กรุณาระบุรุ่นเครื่องหรือ Error Code เพิ่มเติม"
@@ -116,22 +120,24 @@ SYSTEM_PROMPT = """
 10. ห้ามเขียนเลขหน้า แหล่งข้อมูล ข้อความในวงเล็บเหลี่ยม ข้อความอ้างอิงรูป หรือคำเตือนท้ายคำตอบ เพราะระบบจะเพิ่มให้เอง
 11. หากคำถามระบุชื่อชิ้นส่วนไม่ชัด แต่ข้อมูลอ้างอิงเป็นชิ้นส่วนชนิดเฉพาะ ให้ระบุชื่อชิ้นส่วนนั้นสั้น ๆ ก่อนบอกค่า ห้ามเหมารวมว่าเป็นค่าของทุกชิ้นส่วน
 12. ให้ยึดข้อมูลหลักอันดับ 1 เป็นคำตอบหลัก ใช้ข้อมูลอันดับอื่นเฉพาะเมื่อสนับสนุนเรื่องเดียวกัน ห้ามนำข้อมูลคนละระบบหรือคนละอาการมารวมกัน
-13. ใช้หัวข้อ "สาเหตุ:" เฉพาะเมื่อข้อมูลอ้างอิงระบุความสัมพันธ์ว่าเป็นสาเหตุโดยตรง ห้ามเปลี่ยนรายการตรวจสอบให้กลายเป็นข้อสรุปว่าชิ้นส่วนเสีย
-14. หากคู่มือให้ตรวจหลายจุดก่อนวินิจฉัย ให้ใช้หัวข้อ "ตรวจสอบ:" และเรียงรายการสำคัญตามลำดับในคู่มือไม่เกิน 4 รายการ ห้ามสรุปให้เปลี่ยนอะไหล่ตัวแรกทันที
-15. ใช้หัวข้อ "วิธีแก้:" เฉพาะเมื่อข้อมูลอ้างอิงระบุการแก้ไขสำหรับเงื่อนไขที่ยืนยันแล้วโดยตรง หากยังเป็นเพียงขั้นตอนวินิจฉัยให้แสดงเฉพาะ "ตรวจสอบ:"
+13. พูดถึงสาเหตุเฉพาะเมื่อข้อมูลอ้างอิงระบุความสัมพันธ์ว่าเป็นสาเหตุโดยตรงเท่านั้น ห้ามเปลี่ยนรายการตรวจสอบให้กลายเป็นข้อสรุปว่าชิ้นส่วนเสีย
+14. หากคู่มือให้ตรวจหลายจุดก่อนวินิจฉัย ให้เรียงสิ่งที่ต้องตรวจตามลำดับในคู่มือไม่เกิน 4 ข้อ (ใช้เลข 1) 2) 3)... ในประโยคเดียวกัน)
+    ห้ามสรุปให้เปลี่ยนอะไหล่ตัวแรกทันที
+15. บอกวิธีแก้เฉพาะเมื่อข้อมูลอ้างอิงระบุการแก้ไขสำหรับเงื่อนไขที่ยืนยันแล้วโดยตรง หากยังเป็นเพียงขั้นตอนวินิจฉัย ให้บอกแค่สิ่งที่ต้องตรวจ ไม่ต้องสรุปวิธีแก้เอง
 15.1 ข้อความว่า "ตรวจว่าชิ้นส่วนทำงานปกติ" เป็นเพียงขั้นตอนตรวจสอบ ไม่ได้อนุญาตให้สรุปว่าเสียหรือให้เปลี่ยนชิ้นส่วนนั้น
 16. ค่ามาตรฐานต้องคงตัวเลข หน่วย ชิ้นส่วน และเงื่อนไขการวัดจากคู่มือ ห้ามนำค่าจากคนละโหมดหรือคนละเงื่อนไขมาเปรียบเทียบกัน
 17. หลักฐานที่ยืนยันเป็นเพียงจุดบอกว่าหน้านี้ตรงคำถาม ให้ใช้เนื้อหาเต็มของข้อมูลหลักเพื่อรักษาบริบทและลำดับ แต่ห้ามนำหัวข้อข้างเคียงที่ไม่เกี่ยวข้องมาตอบ
-18. เมื่อกล่าวถึงสาเหตุ ให้ขึ้นต้นด้วย "สาเหตุ:" และบอกข้อมูลโดยตรง ห้ามใช้คำว่า "อาจ" หรือ "อาจจะ"
-19. ทุกบรรทัดของคำตอบต้องลงท้ายด้วยคำว่า "ครับ"
+18. เมื่อพูดถึงสาเหตุ ให้บอกตรงๆ ห้ามใช้คำว่า "อาจ" หรือ "อาจจะ" หรือคำเลี่ยงความชัดเจนอื่น
+19. คำตอบต้องลงท้ายด้วยคำว่า "ครับ" ให้ฟังดูสุภาพเหมือนช่างคุยกับลูกค้า
 20. ใช้คำศัพท์ช่างให้คงที่: relief valve = วาล์วระบายแรงดัน, pump proportional valve = วาล์วสัดส่วนปั๊ม และ pump regulator = เรกูเลเตอร์ปั๊ม ห้ามแปล relief valve เป็นลิฟท์วาล์ว
 """.strip()
 
 _anthropic_client = AsyncAnthropic(api_key=settings.anthropic_api_key)
 _groq_client = AsyncOpenAI(api_key=settings.groq_api_key, base_url="https://api.groq.com/openai/v1")
 _SEARCH_QUERY_CACHE_MAX = 512
-_MIN_EVIDENCE_CONFIDENCE = 0.65
-_SAFE_FALLBACK_MIN_SUPPORT = 2
+_MIN_EVIDENCE_CONFIDENCE = 0.55
+_SAFE_FALLBACK_MIN_SUPPORT = 1
+_MAX_RERANK_SELECTIONS = 3
 _search_query_cache: OrderedDict[str, tuple[str, ...]] = OrderedDict()
 _FUNCTION_SCOPE_TERMS = {
     "boom": ("boom", "บูม"),
@@ -457,7 +463,7 @@ def _parse_rerank_result(
                 update={"verified_evidence": evidence if evidence_supported else None}
             )
         )
-        if len(selected) == 2:
+        if len(selected) == _MAX_RERANK_SELECTIONS:
             break
     if selected:
         reason = (
@@ -678,14 +684,15 @@ def _clean_answer(answer: str) -> str:
         answer,
         flags=re.IGNORECASE,
     )
+    # เผื่อโมเดลยังเผลอเลี่ยงคำ ให้ตัดคำเลี่ยงความชัดเจนออกโดยไม่แทรกหัวข้อใดๆ กลับเข้าไปแทน
     answer = re.sub(
-        r"(?:สาเหตุ\s*)?อาจ(?:จะ)?(?:มาจาก|เกิดจาก|เป็นเพราะ)\s*",
-        "สาเหตุ: ",
+        r"อาจ(?:จะ)?(?:มาจาก|เกิดจาก|เป็นเพราะ)\s*",
+        "เกิดจาก",
         answer,
     )
-    answer = re.sub(r"อาจ(?:จะ)?", "", answer)
-    answer = re.sub(r"สาเหตุ\s*:\s*", "สาเหตุ: ", answer)
-    answer = re.sub(r"(?<=\S)\s+สาเหตุ:\s*", " ", answer)
+    answer = re.sub(r"อาจ(?:จะ)?\s*", "", answer)
+    # เผื่อโมเดลยังเผลอใส่หัวข้อ/label แม้กฎจะห้ามไว้แล้ว ให้ตัดออกเงียบๆ ไม่ให้หลุดไปถึงลูกค้า
+    answer = re.sub(r"(?:สาเหตุ|ตรวจสอบ|ค่ามาตรฐาน|วิธีแก้)\s*:\s*", "", answer)
 
     compact_lines = []
     for raw_line in answer.splitlines():
@@ -696,27 +703,34 @@ def _clean_answer(answer: str) -> str:
         # Keep a concise ordered diagnostic path instead of silently discarding every
         # check after item 1. The prompt limits the list to four relevant items.
         line = re.sub(r"(?<=:)\s*1[.)]\s*", " 1) ", line)
-        if len(line) > 220:
+        # คำตอบปกติตอนนี้เป็นข้อความเดียวไม่มีหัวข้อแยกบรรทัด จึงตัดที่ ~590 ตัวอักษร
+        # (ใกล้เพดานรวม 600 ตัวอักษร) แทนเพดานเดิม 220 ที่คิดไว้สำหรับหัวข้อสั้นๆ หลายบรรทัด
+        if len(line) > 590:
             cut_at = max(
-                line.rfind(".", 0, 221),
-                line.rfind(";", 0, 221),
-                line.rfind(",", 0, 221),
+                line.rfind(".", 0, 591),
+                line.rfind(";", 0, 591),
+                line.rfind(",", 0, 591),
             )
-            if cut_at >= 120:
+            if cut_at >= 350:
                 line = line[: cut_at + 1]
             else:
                 boundaries = [
-                    line.find(separator, 120, 221)
+                    line.find(separator, 350, 591)
                     for separator in (" และ", " หรือ", " ซึ่ง", " โดย", " ทำให้")
                 ]
-                boundaries = [position for position in boundaries if position >= 120]
+                boundaries = [position for position in boundaries if position >= 350]
                 if boundaries:
                     line = line[: min(boundaries)].rstrip(" ,;:-")
                 else:
-                    cut_at = line.rfind(" ", 0, 218)
-                    if cut_at < 120:
-                        cut_at = 217
-                    line = line[:cut_at].rstrip(" ,;:-") + "."
+                    cut_at = line.rfind(" ", 0, 588)
+                    if cut_at < 350:
+                        cut_at = 587
+                    line = line[:cut_at].rstrip(" ,;:-")
+            # ถ้าตัดจบกลางเครื่องหมายคำพูดที่เปิดค้างไว้ (เช่น กลางคำพูดภาษาอังกฤษที่ยกมา)
+            # จะอ่านดูขาดตอน ตัดกลับไปก่อนหน้าเครื่องหมายเปิดนั้นทั้งท่อนแทน
+            last_open_quote = line.rfind("“")
+            if last_open_quote != -1 and "”" not in line[last_open_quote:]:
+                line = line[:last_open_quote].rstrip(" ,;:-–")
         compact_lines.append(line)
         if len(compact_lines) == 4:
             break
@@ -725,7 +739,7 @@ def _clean_answer(answer: str) -> str:
     current_length = 0
     for line in compact_lines:
         added_length = len(line) + (1 if selected_lines else 0)
-        if selected_lines and current_length + added_length > 350:
+        if selected_lines and current_length + added_length > 600:
             break
         selected_lines.append(line)
         current_length += added_length
