@@ -88,6 +88,12 @@ Rules:
   number as a readout position, not an error code or failure-type number, unless the customer
   explicitly says it is an error code. Never select an error-code table only because its
   number matches the display/channel number.
+- Some tables list named failure symptoms as rows ("Row group:") against shared checking
+  factors as columns (a troubleshooting matrix). For this table type, a candidate is direct
+  evidence only when the customer's exact described symptom matches one of the table's named
+  row symptoms, or an unambiguous close paraphrase of it. A checking factor that repeats
+  across many unrelated rows (e.g. "leak, clogging of fuel system") is never evidence for a
+  symptom that is absent from the table, even if it echoes words from the question.
 - Every selection must include short verbatim evidence copied from that candidate which
   directly proves its relevance. For prose, use one contiguous quote. For a structured
   table row, copy 2-4 exact cells in reading order and separate them with " | ". Never
@@ -420,22 +426,37 @@ def _candidate_support_score(
     return score
 
 
+# คู่มือมีตารางแบบ "อาการ (แถว) x ปัจจัยที่ต้องเช็ค (คอลัมน์)" เยอะมาก (หมวด TROUBLESHOOTING
+# BY TROUBLE) ปัจจัยเดียวกัน (เช่น "leak, clogging of fuel system") ซ้ำอยู่หลายแถวที่อาการ
+# ต่างกันโดยสิ้นเชิง lexical overlap ทั่วไปแยกไม่ออกว่าอาการที่ลูกค้าถามตรงกับแถวไหนจริง
+# เจอจริง: "น้ำมันดีเซลย้อนกลับถังเป็นสีดำ" ไม่มีแถวไหนตรงเลย แต่ถูกตอบด้วยปัจจัยที่ซ้ำในหลายแถว
+# ไปป์ไลน์ OCR ใส่ marker "Row group:" กำกับตารางแบบนี้ไว้แน่นอนทุกตาราง ใช้เป็นตัวจับที่แม่นยำ
+_SYMPTOM_MATRIX_TABLE_MARKER = "Row group:"
+
+
+def _is_symptom_matrix_table(content: str) -> bool:
+    return _SYMPTOM_MATRIX_TABLE_MARKER in content
+
+
 def _select_safe_fallback(
     chunks: list[RetrievedChunk],
     search_queries: list[str] | None,
     allow_top_ranked: bool = False,
 ) -> RetrievedChunk | None:
+    # ตารางอาการ x ปัจจัย ห้ามหลุดผ่าน fallback แบบ lexical overlap อ่อนๆ เด็ดขาด ต้องมี
+    # หลักฐานตรงชื่ออาการจริงเท่านั้น (ตรวจใน _parse_rerank_result ผ่าน evidence quote)
+    eligible = [chunk for chunk in chunks if not _is_symptom_matrix_table(chunk.content)]
     scored = [
         (_candidate_support_score(chunk, search_queries), index, chunk)
-        for index, chunk in enumerate(chunks)
+        for index, chunk in enumerate(eligible)
     ]
     if not scored:
         return None
     support, _, chunk = max(scored, key=lambda item: (item[0], -item[1]))
     if support < _SAFE_FALLBACK_MIN_SUPPORT:
         if allow_top_ranked:
-            top_chunk = chunks[0]
-            if top_chunk.content.strip():
+            top_chunk = eligible[0] if eligible else None
+            if top_chunk and top_chunk.content.strip():
                 return top_chunk.model_copy(update={"verified_evidence": None})
         return None
     return chunk.model_copy(update={"verified_evidence": None})
@@ -516,7 +537,17 @@ def _parse_rerank_result(
             chunks[index].content, evidence
         )
         semantic_support = _candidate_support_score(chunks[index], search_queries)
-        if not evidence_supported and semantic_support < _SAFE_FALLBACK_MIN_SUPPORT:
+        if _is_symptom_matrix_table(chunks[index].content):
+            # ตารางอาการ x ปัจจัย: แค่ verbatim quote จริงยังไม่พอ เพราะโมเดลอาจยกข้อความจริง
+            # มาจากคนละแถวที่ไม่เกี่ยวกับอาการที่ถามเลยก็ได้ (ปัจจัยซ้ำกันหลายแถว) ต้องเช็คเพิ่มว่า
+            # ตัว evidence เองมีคำที่ทับกับคำค้นพอ ไม่ใช่แค่ทับกับเนื้อหาทั้งหน้าแบบกว้างๆ
+            evidence_term_support = _candidate_support_score(
+                RetrievedChunk(content=evidence), search_queries
+            )
+            if not evidence_supported or evidence_term_support < _SAFE_FALLBACK_MIN_SUPPORT:
+                rejection_reasons.add("matrix_table_quote_required")
+                continue
+        elif not evidence_supported and semantic_support < _SAFE_FALLBACK_MIN_SUPPORT:
             rejection_reasons.add("quote_mismatch")
             continue
         accepted_by_semantic_support = accepted_by_semantic_support or not evidence_supported

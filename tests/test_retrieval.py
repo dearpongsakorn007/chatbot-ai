@@ -10,6 +10,7 @@ from app.services.claude_service import (
     _candidate_support_score,
     _filter_procedure_only_pages,
     _filter_scope_mismatches,
+    _is_symptom_matrix_table,
     _select_safe_fallback,
     ask_clarifying_question,
     get_ambiguity_clarification,
@@ -472,3 +473,69 @@ def test_build_page_image_urls_returns_none_for_single_page_chunk():
 
 def test_build_page_image_urls_returns_none_when_filename_pattern_unrecognized():
     assert _build_page_image_urls("https://x.supabase.co/foo/bar.jpg", [1, 2]) is None
+
+
+_MATRIX_TABLE_CONTENT = (
+    "47. TROUBLESHOOTING (BY TROUBLE)\n"
+    "Matrix table: Trouble (rows) vs Factors to check (columns).\n"
+    "Row group: Faulty starting\n"
+    "Poor start ability | Fuel filter clogged; Leak, clogging of fuel system and intruding of air\n"
+    "Row group: Other failures\n"
+    "Exhaust smoke is in black | Air cleaner clogged; Improper fuel in use\n"
+    "Oil quantity increased. (Intruding of water and fuel) | Leak, clogging of fuel system and intruding of air"
+)
+
+
+def test_is_symptom_matrix_table_detects_row_group_marker():
+    assert _is_symptom_matrix_table(_MATRIX_TABLE_CONTENT)
+    assert not _is_symptom_matrix_table("Normal prose page about pump pressure checks")
+
+
+def test_safe_fallback_never_selects_a_matrix_table_via_weak_overlap():
+    chunk = RetrievedChunk(content=_MATRIX_TABLE_CONTENT, reference="47-33")
+    fallback = _select_safe_fallback(
+        [chunk],
+        ["fuel", "leak", "clogging"],
+        allow_top_ranked=True,
+    )
+    assert fallback is None
+
+
+def test_parse_rerank_result_rejects_matrix_table_selection_without_verbatim_quote():
+    chunks = [RetrievedChunk(content=_MATRIX_TABLE_CONTENT, reference="47-33")]
+    raw = json.dumps(
+        {
+            "status": "answer",
+            "selections": [
+                {
+                    "index": 1,
+                    "confidence": 0.9,
+                    "evidence": "Leak, clogging of fuel system and intruding of air",
+                }
+            ],
+        }
+    )
+    result = _parse_rerank_result(raw, chunks, ["diesel fuel turns black returning to tank"])
+    assert result.chunks == []
+    assert "matrix_table_quote_required" in result.reason
+
+
+def test_parse_rerank_result_accepts_matrix_table_with_real_symptom_row_quote():
+    chunks = [RetrievedChunk(content=_MATRIX_TABLE_CONTENT, reference="47-33")]
+    raw = json.dumps(
+        {
+            "status": "answer",
+            "selections": [
+                {
+                    "index": 1,
+                    "confidence": 0.9,
+                    "evidence": (
+                        "Exhaust smoke is in black | Air cleaner clogged; "
+                        "Improper fuel in use"
+                    ),
+                }
+            ],
+        }
+    )
+    result = _parse_rerank_result(raw, chunks, ["exhaust smoke black"])
+    assert [chunk.reference for chunk in result.chunks] == ["47-33"]
