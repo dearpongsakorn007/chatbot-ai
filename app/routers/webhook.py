@@ -7,6 +7,11 @@ from fastapi import APIRouter, Request, HTTPException, BackgroundTasks
 
 from app.config import settings
 from app.models.schemas import LineWebhookPayload, RetrievedChunk
+from app.services.conversation_state_service import (
+    clear_pending_clarification,
+    get_pending_clarification,
+    save_pending_clarification,
+)
 from app.services.embedding_service import get_embedding
 from app.services.retrieval_service import lookup_error_code, retrieve_chunks
 from app.services.claude_service import (
@@ -148,6 +153,7 @@ def _prepare_reply(
 async def _handle_message(reply_token: str, user_id: str, question: str) -> None:
     try:
         if _is_conversation_opener(question):
+            clear_pending_clarification(user_id)
             answer = _opening_response(question)
             await reply_message(reply_token, answer)
             log_conversation(user_id, question, answer)
@@ -155,12 +161,21 @@ async def _handle_message(reply_token: str, user_id: str, question: str) -> None
 
         model_followup = _model_followup_response(question)
         if model_followup:
+            clear_pending_clarification(user_id)
             await reply_message(reply_token, model_followup)
             log_conversation(user_id, question, model_followup)
             return
 
+        # ถ้าบอทเพิ่งถามกลับไปหาผู้ใช้คนนี้และยังไม่หมดอายุ ให้ผูกคำตอบสั้นๆ นี้เข้ากับคำถามเดิม
+        # ก่อนค้นหา ไม่งั้นข้อความสั้นๆ (เช่น "ระบบบิดครับ") จะถูกค้นหาแบบไม่มีบริบทแล้วตอบผิดเรื่อง
+        pending_question = get_pending_clarification(user_id)
+        if pending_question:
+            clear_pending_clarification(user_id)
+            question = f"{pending_question} {question}"
+
         clarification = get_ambiguity_clarification(question)
         if clarification:
+            save_pending_clarification(user_id, question)
             answer, images = _prepare_reply(clarification, [])
             await reply_message(reply_token, answer, images)
             log_conversation(user_id, question, answer)
@@ -176,6 +191,7 @@ async def _handle_message(reply_token: str, user_id: str, question: str) -> None
                     # จะตอบว่าไม่พบข้อมูลอยู่แล้ว ไม่มีอะไรจะเสีย เปลี่ยนเป็นถามกลับเจาะจงแทน
                     # และไม่แนบรูป/เลขหน้าของ chunk นี้ ไม่งั้นคำตอบจะขัดแย้งกันเอง
                     answer = await ask_clarifying_question(question)
+                    save_pending_clarification(user_id, question)
                     reply_chunks = []
                 answer, images = _prepare_reply(answer, reply_chunks)
                 await reply_message(reply_token, answer, images)
@@ -200,9 +216,11 @@ async def _handle_message(reply_token: str, user_id: str, question: str) -> None
                 # จะตอบว่าไม่พบข้อมูลอยู่แล้ว ไม่มีอะไรจะเสีย เปลี่ยนเป็นถามกลับเจาะจงแทน
                 # และไม่แนบรูปอ้างอิงของ chunk นี้ ไม่งั้นคำตอบจะขัดแย้งกันเอง
                 answer = await ask_clarifying_question(question)
+                save_pending_clarification(user_id, question)
                 chunks = []
         else:
             answer = await ask_clarifying_question(question)
+            save_pending_clarification(user_id, question)
         answer, images = _prepare_reply(answer, chunks)
         await reply_message(reply_token, answer, images)
         log_conversation(user_id, question, answer)
