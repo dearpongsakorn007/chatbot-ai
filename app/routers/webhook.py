@@ -12,8 +12,10 @@ from app.services.retrieval_service import lookup_error_code, retrieve_chunks
 from app.services.claude_service import (
     ask_llm,
     extract_error_code,
+    get_ambiguity_clarification,
     infer_content_type_filter,
     infer_search_category_hint,
+    is_insufficient_data_answer,
     rerank_chunks,
     rewrite_search_queries,
 )
@@ -154,12 +156,22 @@ async def _handle_message(reply_token: str, user_id: str, question: str) -> None
             log_conversation(user_id, question, model_followup)
             return
 
+        clarification = get_ambiguity_clarification(question)
+        if clarification:
+            answer, images = _prepare_reply(clarification, [])
+            await reply_message(reply_token, answer, images)
+            log_conversation(user_id, question, answer)
+            return
+
         error_code = extract_error_code(question)
         if error_code:
             verified_chunk = await lookup_error_code(error_code)
             if verified_chunk:
                 answer = await ask_llm(question, [verified_chunk])
-                answer, images = _prepare_reply(answer, [verified_chunk])
+                # ถ้า ask_llm ตัดสินใจว่าหลักฐานไม่พอ อย่าแนบรูป/เลขหน้าของ chunk นี้ไปด้วย
+                # ไม่งั้นคำตอบจะขัดแย้งกันเอง (บอกว่าไม่พบข้อมูล แต่ก็มีรูปอ้างอิงแนบมา)
+                reply_chunks = [] if is_insufficient_data_answer(answer) else [verified_chunk]
+                answer, images = _prepare_reply(answer, reply_chunks)
                 await reply_message(reply_token, answer, images)
                 log_conversation(user_id, question, answer)
                 return
@@ -178,6 +190,9 @@ async def _handle_message(reply_token: str, user_id: str, question: str) -> None
         chunks = reranked.chunks
         if chunks:
             answer = await ask_llm(question, chunks)
+            # เช่นเดียวกับ error-code path: ไม่แนบรูปอ้างอิงถ้าคำตอบสุดท้ายบอกว่าหลักฐานไม่พอ
+            if is_insufficient_data_answer(answer):
+                chunks = []
         else:
             answer = "ไม่พบหลักฐานที่ตรงกับอาการในฐานข้อมูล กรุณาระบุชิ้นส่วน ตำแหน่ง และลักษณะอาการเพิ่มเติม"
         answer, images = _prepare_reply(answer, chunks)

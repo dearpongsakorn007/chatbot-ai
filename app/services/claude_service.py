@@ -132,6 +132,16 @@ SYSTEM_PROMPT = """
 20. ใช้คำศัพท์ช่างให้คงที่: relief valve = วาล์วระบายแรงดัน, pump proportional valve = วาล์วสัดส่วนปั๊ม และ pump regulator = เรกูเลเตอร์ปั๊ม ห้ามแปล relief valve เป็นลิฟท์วาล์ว
 """.strip()
 
+# ต้องตรงกับข้อความในกฎข้อ 8 ของ SYSTEM_PROMPT ด้านบนเป๊ะ ใช้เช็คใน webhook.py ว่า
+# ask_llm ตัดสินใจว่าหลักฐานไม่พอ (ทั้งที่ rerank เลือก chunk มาแล้ว) จะได้ไม่แนบรูปอ้างอิง
+# ของ chunk นั้นไปกับคำตอบที่บอกว่า "ไม่พบข้อมูล" ซึ่งจะดูขัดแย้งกันเอง
+INSUFFICIENT_DATA_MARKER = "ไม่พบข้อมูลเพียงพอในฐานข้อมูล"
+
+
+def is_insufficient_data_answer(answer: str) -> bool:
+    return INSUFFICIENT_DATA_MARKER in answer
+
+
 _anthropic_client = AsyncAnthropic(api_key=settings.anthropic_api_key)
 _groq_client = AsyncOpenAI(api_key=settings.groq_api_key, base_url="https://api.groq.com/openai/v1")
 _SEARCH_QUERY_CACHE_MAX = 512
@@ -160,7 +170,44 @@ def _question_cache_key(question: str) -> str:
 
 
 def get_ambiguity_clarification(question: str) -> str | None:
-    """Compatibility hook: technical questions now continue without asking back."""
+    """ถามกลับเฉพาะกรณีคำเดียวกันสื่อได้ 2 ความหมายที่ต่างกันสุดขั้วจริงๆ (ไม่ใช่แค่มั่นใจน้อย)
+
+    เคยลบพฤติกรรมถามกลับออกไปทั้งหมด (ดู git log "answer technical questions without
+    clarification") เพราะการถามกลับแบบกว้างๆ/ให้ LLM ตัดสินใจเองสร้างภาระให้ช่างต้องพิมพ์
+    ไปกลับโดยไม่จำเป็น แต่เคสนี้ (น้ำมันรั่ว vs ชิ้นส่วนหลุดทางกายภาพ) เป็นความกำกวมที่ตอบผิด
+    ทางได้จริง จึงนำกลับมาเฉพาะรูปแบบนี้แบบ hardcode แคบๆ ไม่ใช้ LLM ตัดสินใจว่าควรถามหรือไม่
+    """
+    normalized = question.casefold()
+    fluid_terms = ("น้ำมัน", "เชื้อเพลิง", "ดีเซล", "fuel", "diesel", " oil ")
+    separation_terms = (
+        "หลุด",
+        "เด้ง",
+        "ดันออก",
+        "โผล่ออก",
+        "loose",
+        "detached",
+        "popped out",
+        "came out",
+    )
+    explicit_leak_terms = ("รั่ว", "ซึม", "ไหลออก", "leak", "seep")
+    explicit_physical_terms = (
+        "จากฝาสูบ",
+        "ออกจากฝาสูบ",
+        "แคลมป์",
+        "ขายึด",
+        "น็อตยึด",
+        "clamp",
+        "holder",
+        "mounting bolt",
+    )
+    is_ambiguous = any(term in normalized for term in fluid_terms) and any(
+        term in normalized for term in separation_terms
+    )
+    is_explicit = any(term in normalized for term in explicit_leak_terms) or any(
+        term in normalized for term in explicit_physical_terms
+    )
+    if is_ambiguous and not is_explicit:
+        return "หมายถึงตัวหัวฉีดหลุดออกจากฝาสูบ หรือน้ำมันรั่วออกบริเวณหัวฉีดหรือท่อครับ?"
     return None
 
 

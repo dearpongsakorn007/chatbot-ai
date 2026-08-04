@@ -10,6 +10,7 @@ from app.services.claude_service import (
     _select_safe_fallback,
     get_ambiguity_clarification,
     infer_search_category_hint,
+    is_insufficient_data_answer,
     _question_cache_key,
     _search_query_cache,
     _parse_rerank_result,
@@ -58,9 +59,13 @@ def test_parse_search_queries_removes_display_position_and_normalizes_pump_index
     ) == ["P1 pump pressure", "P1 pump pressure low"]
 
 
-def test_ambiguous_injector_wording_continues_without_clarification():
+def test_ambiguous_injector_wording_now_asks_for_clarification():
+    # คำเดียวกันสื่อได้ทั้งหัวฉีดหลุดทางกายภาพ (แก้คนละจุดจากที่รั่ว) — เป็นความกำกวมที่ยอมรับ
+    # ให้ถามกลับได้ ต่างจาก "มั่นใจน้อย" ทั่วไปที่ยังตอบภายในขอบเขตที่มีหลักฐานรองรับตามเดิม
     question = "SK200-8 หัวฉีดน้ำมันดันออกหลุดออกมาเกิดจากอะไร"
-    assert get_ambiguity_clarification(question) is None
+    assert get_ambiguity_clarification(question) == (
+        "หมายถึงตัวหัวฉีดหลุดออกจากฝาสูบ หรือน้ำมันรั่วออกบริเวณหัวฉีดหรือท่อครับ?"
+    )
 
 
 def test_explicit_physical_or_leak_wording_skips_clarification():
@@ -314,6 +319,16 @@ def test_clean_answer_strips_stray_headers_the_model_should_no_longer_use():
     assert "แรงดันปั๊มต่ำ" in cleaned
     assert "ตรวจฟิลเตอร์" in cleaned
     assert "ปรับแรงดันปั๊มให้ได้ค่ามาตรฐาน" in cleaned
+
+
+def test_is_insufficient_data_answer_detects_the_rule_8_boilerplate():
+    answer = "สวัสดีครับช่างเต้ TIS ครับ\n\nไม่พบข้อมูลเพียงพอในฐานข้อมูล กรุณาระบุรุ่นเครื่องหรือ Error Code เพิ่มเติมครับ"
+    assert is_insufficient_data_answer(answer)
+
+
+def test_is_insufficient_data_answer_ignores_real_answers():
+    answer = "เกิดจากแรงดันปั๊มต่ำ ให้ตรวจแรงดันปั๊มและตรวจฟิลเตอร์ครับ"
+    assert not is_insufficient_data_answer(answer)
 
 
 def test_clean_answer_enforces_length_as_single_flowing_line():
